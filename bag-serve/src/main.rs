@@ -1,8 +1,10 @@
-use std::{net::IpAddr, path::PathBuf};
+use std::{ffi::OsString, net::IpAddr, path::PathBuf};
 
 use axum::{Router, http::Uri};
 use bag_fs::fs::FsHandler;
 use clap::{Parser, Subcommand};
+use tracing_indicatif::IndicatifLayer;
+use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::db::Database;
 
@@ -32,14 +34,23 @@ enum Command {
     },
     Upgrade,
     Rescan {
-        #[clap(default_value = "/")]
-        base: PathBuf
+        #[clap(default_value = "")]
+        base: OsString, // OsString opt-out non-empty check
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let indicatif_layer = IndicatifLayer::new();
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(indicatif_layer.get_stderr_writer())
+                .with_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
+        )
+        .with(indicatif_layer)
+        .init();
 
     let args = Args::parse();
     let db_uri = if let Some(uri) = args.db {

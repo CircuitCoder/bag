@@ -134,7 +134,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     // This is done through a recursion
     // Assume the base is already updated last level. ID is the ID of the base, not its parent.
     // Calling this function currently implies that base is a directory
-    async fn walk(db: &Database, root: &Path, scan_id: i64, base: &Path, id: i64, counter: &mut i64) -> anyhow::Result<()> {
+    async fn walk(db: &Database, root: &Path, scan_id: i64, base: &Path, id: i64, counter: &mut i64, bar: &mut indicatif::ProgressBar) -> anyhow::Result<()> {
         let joined = root.join(base);
         let mut entries = tokio::fs::read_dir(joined).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -142,11 +142,13 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             let name = entry.file_name().to_string_lossy().into_owned();
             let child_path = base.join(name);
             let metadata = entry.metadata().await?;
+            bar.tick();
+            bar.set_message(format!("Scanning({}): {}", *counter, child_path.display()));
             let (cid, _) = update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true).await?;
-            tracing::debug!("Scanned {} (id: {})", child_path.display(), cid);
+            tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
-                Box::pin(walk(db, root, scan_id, &child_path, cid, counter)).await?;
+                Box::pin(walk(db, root, scan_id, &child_path, cid, counter, bar)).await?;
             }
         }
 
@@ -154,7 +156,8 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     }
 
     let mut counter = 1;
-    walk(db, root.as_ref(), scan_id, base.as_ref(), parent, &mut counter).await?;
+    let mut bar = indicatif::ProgressBar::new_spinner().with_message(format!("Scanning(1): {}", base.as_ref().display()));
+    walk(db, root.as_ref(), scan_id, base.as_ref(), parent, &mut counter, &mut bar).await?;
 
     // Phase 3: remove all stale entries that has scan_id < current scan.
     sqlx::query!(
