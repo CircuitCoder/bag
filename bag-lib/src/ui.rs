@@ -18,7 +18,9 @@ pub struct Layout {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Text { content: String }
+pub struct Text {
+    content: String,
+}
 
 // Main image, taking full width
 #[derive(Debug, Clone, Serialize, Deserialize)]

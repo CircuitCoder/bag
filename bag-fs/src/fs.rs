@@ -1,7 +1,7 @@
 // Default fs handler
 
-use std::path::PathBuf;
 use axum::{body::Body, http::Uri, response::Response};
+use std::path::PathBuf;
 use tokio_util::io::ReaderStream;
 
 use crate::Result;
@@ -70,22 +70,30 @@ impl FsHandler {
 
         match self.load_fs(path).await {
             Err(crate::Error::NotFound) => {
-            return Response::builder()
-                .status(404).body("Not Found".into()).unwrap()
+                return Response::builder()
+                    .status(404)
+                    .body("Not Found".into())
+                    .unwrap();
             }
             Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Response::builder()
-                    .status(404).body("Not Found".into()).unwrap()
+                    .status(404)
+                    .body("Not Found".into())
+                    .unwrap();
             }
             Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Response::builder()
-                    .status(403).body("Permission Denied".into()).unwrap()
-            },
+                    .status(403)
+                    .body("Permission Denied".into())
+                    .unwrap();
+            }
             Err(e) => {
                 return Response::builder()
-                    .status(500).body(format!("Internal Server Error: {}", e).into()).unwrap()
-            },
-            Ok(resp) => resp
+                    .status(500)
+                    .body(format!("Internal Server Error: {}", e).into())
+                    .unwrap();
+            }
+            Ok(resp) => resp,
         }
     }
 }

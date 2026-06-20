@@ -8,8 +8,8 @@ use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::db::Database;
 
-mod scan;
 mod db;
+mod scan;
 
 #[derive(Parser)]
 struct Args {
@@ -36,7 +36,7 @@ enum Command {
     Rescan {
         #[clap(default_value = "")]
         base: OsString, // OsString opt-out non-empty check
-    }
+    },
 }
 
 #[tokio::main]
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(indicatif_layer.get_stderr_writer())
-                .with_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
+                .with_filter(tracing_subscriber::filter::EnvFilter::from_default_env()),
         )
         .with(indicatif_layer)
         .init();
@@ -57,7 +57,9 @@ async fn main() -> anyhow::Result<()> {
         uri
     } else {
         std::env::var("DATABASE_URL").map_err(|e| {
-            anyhow::anyhow!("DATABASE_URL environment variable not set and no --db argument provided: {e}")
+            anyhow::anyhow!(
+                "DATABASE_URL environment variable not set and no --db argument provided: {e}"
+            )
         })?
     };
 
@@ -72,19 +74,15 @@ async fn main() -> anyhow::Result<()> {
     match args.command {
         Command::Serve { bind, port } => {
             let fs = FsHandler::new(args.root.clone());
-            let raw_handler = Router::new().fallback(async move |uri: Uri| { fs.handle(uri).await });
+            let raw_handler = Router::new().fallback(async move |uri: Uri| fs.handle(uri).await);
             let app = Router::new().nest("/v1/raw", raw_handler);
             let binder = tokio::net::TcpListener::bind((bind, port)).await?;
             axum::serve(binder, app).await?;
         }
         Command::Rescan { base } => {
-            scan::rescan(
-                &args.root,
-                &base,
-                &db,
-            ).await?;
+            scan::rescan(&args.root, &base, &db).await?;
         }
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 
     Ok(())

@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use sqlx::{SqlitePool, migrate::{Migrate, Migrator}, sqlite::SqliteConnectOptions};
+use sqlx::{
+    SqlitePool,
+    migrate::{Migrate, Migrator},
+    sqlite::SqliteConnectOptions,
+};
 
 static MIGRATOR: Migrator = sqlx::migrate!();
 pub struct Database {

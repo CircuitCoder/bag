@@ -7,8 +7,17 @@ use chrono::{DateTime, Utc};
 use crate::db::Database;
 
 pub fn sanitize_base_path<P: AsRef<Path>>(base: P) -> anyhow::Result<()> {
-    if base.as_ref().as_os_str().as_encoded_bytes().last().copied().is_some_and(|e| e == std::path::MAIN_SEPARATOR as u8) {
-        return Err(anyhow::anyhow!("Base path must not end with a trailing separator"));
+    if base
+        .as_ref()
+        .as_os_str()
+        .as_encoded_bytes()
+        .last()
+        .copied()
+        .is_some_and(|e| e == std::path::MAIN_SEPARATOR as u8)
+    {
+        return Err(anyhow::anyhow!(
+            "Base path must not end with a trailing separator"
+        ));
     }
 
     for seg in base.as_ref().components() {
@@ -43,9 +52,18 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
 
     // Upsert a file entry. Returns the ID whether the file was actually updated (so if it's a archive, a recursion descent is needed)
     // Note that if the file has newer scan id than our current scan, it's not updated at all.
-    async fn update_file(db: &Database, path: &Path, metadata: &std::fs::Metadata, parent: Option<i64>, scan_id: i64, mark_stale: bool) -> anyhow::Result<(i64, bool)> {
+    async fn update_file(
+        db: &Database,
+        path: &Path,
+        metadata: &std::fs::Metadata,
+        parent: Option<i64>,
+        scan_id: i64,
+        mark_stale: bool,
+    ) -> anyhow::Result<(i64, bool)> {
         let mut tx = db.as_ref().begin().await?;
-        let path = &path.to_str().ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {}", path.display()))?;
+        let path = &path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {}", path.display()))?;
         let cur = sqlx::query!(
             r#"SELECT id AS "id!", scan_id, mtime AS "mtime: DateTime<Utc>" FROM files WHERE path = ?"#,
             path
@@ -88,7 +106,12 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         // If unchanged, don't mark children as stale
         if cur.mtime >= mtime {
             if cur.mtime > mtime {
-                tracing::warn!("File {} has mtime {} but database has {}, which is newer. Time unwinded?", path, mtime, cur.mtime);
+                tracing::warn!(
+                    "File {} has mtime {} but database has {}, which is newer. Time unwinded?",
+                    path,
+                    mtime,
+                    cur.mtime
+                );
             }
             tx.commit().await?;
             return Ok((cur.id, false));
@@ -102,7 +125,9 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                 scan_id,
                 cur.id,
                 scan_id,
-            ).execute(&mut *tx).await?;
+            )
+            .execute(&mut *tx)
+            .await?;
         }
 
         tx.commit().await?;
@@ -110,18 +135,41 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         Ok((cur.id, true))
     }
 
-    let root_metadata = root.as_ref().metadata().map_err(|e| anyhow::anyhow!("Failed to get metadata for root directory {}: {}", root.as_ref().display(), e))?;
-    let (mut parent, _) = update_file(&db, Path::new(""), &root_metadata, None, scan_id, base.as_ref().is_empty()).await?;
+    let root_metadata = root.as_ref().metadata().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to get metadata for root directory {}: {}",
+            root.as_ref().display(),
+            e
+        )
+    })?;
+    let (mut parent, _) = update_file(
+        &db,
+        Path::new(""),
+        &root_metadata,
+        None,
+        scan_id,
+        base.as_ref().is_empty(),
+    )
+    .await?;
 
     // Phase 1: iterate through all parent directories in base, ensure that they are created, get their IDs.
     let mut cur = PathBuf::new();
     for seg in base.as_ref().components() {
         cur.push(seg.as_os_str());
         let joined = root.as_ref().join(&cur);
-        let metadata = joined.metadata().map_err(|e| anyhow::anyhow!("Failed to get metadata for parent directory {} in base: {}", cur.display(), e))?;
+        let metadata = joined.metadata().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to get metadata for parent directory {} in base: {}",
+                cur.display(),
+                e
+            )
+        })?;
         // TODO: allow scan base to be inside archive files
         if !metadata.is_dir() {
-            return Err(anyhow::anyhow!("Base path {} is not a directory", joined.display()));
+            return Err(anyhow::anyhow!(
+                "Base path {} is not a directory",
+                joined.display()
+            ));
         }
 
         // TODO: to_string_lossy here is OK?
@@ -134,7 +182,15 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     // This is done through a recursion
     // Assume the base is already updated last level. ID is the ID of the base, not its parent.
     // Calling this function currently implies that base is a directory
-    async fn walk(db: &Database, root: &Path, scan_id: i64, base: &Path, id: i64, counter: &mut i64, bar: &mut indicatif::ProgressBar) -> anyhow::Result<()> {
+    async fn walk(
+        db: &Database,
+        root: &Path,
+        scan_id: i64,
+        base: &Path,
+        id: i64,
+        counter: &mut i64,
+        bar: &mut indicatif::ProgressBar,
+    ) -> anyhow::Result<()> {
         let joined = root.join(base);
         let mut entries = tokio::fs::read_dir(joined).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -144,7 +200,8 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             let metadata = entry.metadata().await?;
             bar.tick();
             bar.set_message(format!("Scanning({}): {}", *counter, child_path.display()));
-            let (cid, _) = update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true).await?;
+            let (cid, _) =
+                update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true).await?;
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
@@ -156,8 +213,18 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     }
 
     let mut counter = 1;
-    let mut bar = indicatif::ProgressBar::new_spinner().with_message(format!("Scanning(1): {}", base.as_ref().display()));
-    walk(db, root.as_ref(), scan_id, base.as_ref(), parent, &mut counter, &mut bar).await?;
+    let mut bar = indicatif::ProgressBar::new_spinner()
+        .with_message(format!("Scanning(1): {}", base.as_ref().display()));
+    walk(
+        db,
+        root.as_ref(),
+        scan_id,
+        base.as_ref(),
+        parent,
+        &mut counter,
+        &mut bar,
+    )
+    .await?;
 
     // Phase 3: remove all stale entries that has scan_id < current scan.
     sqlx::query!(
