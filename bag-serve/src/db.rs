@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use sqlx::{
     SqlitePool,
     migrate::{Migrate, Migrator},
-    sqlite::SqliteConnectOptions,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
 };
 
 static MIGRATOR: Migrator = sqlx::migrate!();
@@ -12,8 +12,17 @@ pub struct Database {
 }
 
 impl Database {
+    fn default_options(url: &str) -> anyhow::Result<SqliteConnectOptions> {
+        let opts = SqliteConnectOptions::from_str(url)?
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .pragma("journal_size_limit", "67108864") // 64MB
+            .pragma("mmap_size", "268435456"); // 256MB
+        Ok(opts)
+    }
+
     pub async fn load(url: &str) -> anyhow::Result<Database> {
-        let db = SqlitePool::connect(&url).await?;
+        let db = SqlitePool::connect_with(Self::default_options(url)?).await?;
 
         let mut conn = db.acquire().await?;
         conn.ensure_migrations_table().await?;
@@ -47,7 +56,7 @@ impl Database {
     }
 
     pub async fn setup(url: &str) -> anyhow::Result<Database> {
-        let opts: SqliteConnectOptions = url.parse()?;
+        let opts: SqliteConnectOptions = Self::default_options(url)?;
         let opts = opts.create_if_missing(true);
         let db = SqlitePool::connect_with(opts).await?;
         MIGRATOR.run(&db).await?;

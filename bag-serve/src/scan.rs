@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use indicatif::ProgressStyle;
 
 use crate::db::Database;
 
@@ -198,8 +199,8 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             let name = entry.file_name().to_string_lossy().into_owned();
             let child_path = base.join(name);
             let metadata = entry.metadata().await?;
-            bar.tick();
-            bar.set_message(format!("Scanning({}): {}", *counter, child_path.display()));
+            bar.inc(1);
+            bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
             let (cid, _) =
                 update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true).await?;
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
@@ -214,7 +215,10 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
 
     let mut counter = 1;
     let mut bar = indicatif::ProgressBar::new_spinner()
-        .with_message(format!("Scanning(1): {}", base.as_ref().display()));
+        .with_style(
+            ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
+        )
+        .with_message(format!("Scanning 1: {}", base.as_ref().display()));
     walk(
         db,
         root.as_ref(),
