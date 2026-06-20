@@ -143,6 +143,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             let child_path = base.join(name);
             let metadata = entry.metadata().await?;
             let (cid, _) = update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true).await?;
+            tracing::debug!("Scanned {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
                 Box::pin(walk(db, root, scan_id, &child_path, cid, counter)).await?;

@@ -6,7 +6,7 @@ CREATE TABLE files (
   mtime DATETIME NOT NULL,
   scan_id INTEGER NOT NULL, -- The epoch of the last scanning task that saw this file. Used to remove the file at the end of the scan.
 
-  -- The DIRECT PARENT of this file (a directory). NULL if this is at top-level inside the root directory
+  -- The DIRECT PARENT of this file (a directory). NULL if this is the top-level directory itself
   parent INTEGER,
 
   -- The container of this file (an archive). This is used to delegate the file reader
