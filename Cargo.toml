@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["bag-fs","bag-lib", "bag-serve", "bag-web"]
+
+[workspace.dependencies]
+axum = "0.8.9"
+tokio = "1.52.3"
+tracing = "0.1.44"
