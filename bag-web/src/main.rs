@@ -25,11 +25,7 @@ impl Context {
 #[component]
 fn App() -> impl IntoView {
     web_sys::console::log_1(&"App mounted".into());
-    let local_storage = web_sys::window()
-        .unwrap()
-        .local_storage()
-        .unwrap()
-        .unwrap();
+    let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
     let backend = local_storage.get_item("backend").unwrap().unwrap();
     web_sys::console::log_1(&format!("Using backend: {}", backend).into());
     let (backend, _) = signal(backend);
@@ -43,9 +39,7 @@ fn App() -> impl IntoView {
 
     let (path, set_path) = signal(initial_path);
 
-    let ctx = Context {
-        set_path,
-    };
+    let ctx = Context { set_path };
     provide_context(ctx);
 
     // Listen for popstate events to handle browser navigation (back/forward)

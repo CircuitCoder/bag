@@ -1,8 +1,18 @@
 use std::path::PathBuf;
 
-use axum::{Json, Router, body::Body, extract::State, http::{HeaderMap, Response, Uri}, response::IntoResponse};
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::State,
+    http::{HeaderMap, Response, Uri},
+    response::IntoResponse,
+};
 use bag_fs::{etag::Etag, fs::FsHandler};
-use bag_lib::{action::Action, path::{Path, SegmentParseError}, ui::{Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text}};
+use bag_lib::{
+    action::Action,
+    path::{Path, SegmentParseError},
+    ui::{Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text},
+};
 use chrono::{DateTime, Utc};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -29,41 +39,71 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
         // TODO: filter
         // TODO: sort
 
-        let limit = path.last().arg("limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(DEFAULT_PAGE_SIZE) as i64;
-        let offset = path.last().arg("offset").and_then(|s| s.parse::<usize>().ok()).unwrap_or(0) as i64;
+        let limit = path
+            .last()
+            .arg("limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_PAGE_SIZE) as i64;
+        let offset = path
+            .last()
+            .arg("offset")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0) as i64;
 
-        let children = sqlx::query!(r#"
+        let children = sqlx::query!(
+            r#"
             SELECT path, is_directory FROM files WHERE parent = ?
             ORDER BY is_directory DESC, mtime DESC
             LIMIT ? OFFSET ?
-        "#, file.id, limit, offset)
-            .fetch_all(db.as_ref())
-            .await?;
+        "#,
+            file.id,
+            limit,
+            offset
+        )
+        .fetch_all(db.as_ref())
+        .await?;
 
-        let images = children.into_iter().map(
-            |row| GalleryImage {
-                ty: if row.is_directory { GalleryImageType::Directory } else { GalleryImageType::File },
-                thumbnail: if row.is_directory { None } else { Some(row.path.clone()) },
-                name: row.path.rsplit_once("/").map(|e| e.1.to_owned()).unwrap_or(row.path.clone()),
+        let images = children
+            .into_iter()
+            .map(|row| GalleryImage {
+                ty: if row.is_directory {
+                    GalleryImageType::Directory
+                } else {
+                    GalleryImageType::File
+                },
+                thumbnail: if row.is_directory {
+                    None
+                } else {
+                    Some(row.path.clone())
+                },
+                name: row
+                    .path
+                    .rsplit_once("/")
+                    .map(|e| e.1.to_owned())
+                    .unwrap_or(row.path.clone()),
                 action: Some(Action::Navigate { to: row.path }),
-            }
-        ).collect();
+            })
+            .collect();
 
         Layout {
             top: vec![],
-            main: vec![
-                Component::Gallery(Gallery { images })
-            ],
+            main: vec![Component::Gallery(Gallery { images })],
             metadata: vec![],
             left: None,
             right: None,
         }
     } else {
-        let name = file.path.rsplit_once("/").map(|e| e.1.to_owned()).unwrap_or(file.path.clone());
+        let name = file
+            .path
+            .rsplit_once("/")
+            .map(|e| e.1.to_owned())
+            .unwrap_or(file.path.clone());
         Layout {
             top: vec![],
             main: vec![
-                Component::Image(Image { resource: file.path.clone() }),
+                Component::Image(Image {
+                    resource: file.path.clone(),
+                }),
                 Component::Text(Text { content: name }),
             ],
             metadata: vec![],
@@ -79,53 +119,81 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
 
 pub fn build(db: Database, root: PathBuf) -> Router {
     let fs = FsHandler::new(root);
-    let raw_handler = Router::new().fallback(async move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
-        let path = uri.path();
-        let path = path.trim_start_matches('/');
-        // Query fs for the file mtime
-        let metadata = sqlx::query!(r#"SELECT mtime AS "mtime: DateTime<Utc>", length FROM files WHERE path = ?"#, path)
+    let raw_handler = Router::new().fallback(
+        async move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
+            let path = uri.path();
+            let path = path.trim_start_matches('/');
+            // Query fs for the file mtime
+            let metadata = sqlx::query!(
+                r#"SELECT mtime AS "mtime: DateTime<Utc>", length FROM files WHERE path = ?"#,
+                path
+            )
             .fetch_optional(state.db.as_ref())
             .await;
 
-        if let Some(etag) = headers.get(axum::http::header::IF_NONE_MATCH).and_then(|e| e.to_str().ok()) {
-            if let Ok(Some(metadata)) = metadata {
-                let mtime: std::time::SystemTime = metadata.mtime.into();
-                let ref_etag = Etag { mtime, length: metadata.length as u64 };
-                if ref_etag.check_header(etag) {
-                    return Response::builder()
-                        .status(axum::http::StatusCode::NOT_MODIFIED)
-                        .header("ETag", ref_etag.hash_string())
-                        .header("Cache-Control", "max-age=60, stale-while-revalidate=86400")
-                        .body(Body::empty())
-                        .unwrap();
+            if let Some(etag) = headers
+                .get(axum::http::header::IF_NONE_MATCH)
+                .and_then(|e| e.to_str().ok())
+            {
+                if let Ok(Some(metadata)) = metadata {
+                    let mtime: std::time::SystemTime = metadata.mtime.into();
+                    let ref_etag = Etag {
+                        mtime,
+                        length: metadata.length as u64,
+                    };
+                    if ref_etag.check_header(etag) {
+                        return Response::builder()
+                            .status(axum::http::StatusCode::NOT_MODIFIED)
+                            .header("ETag", ref_etag.hash_string())
+                            .header("Cache-Control", "max-age=60, stale-while-revalidate=86400")
+                            .body(Body::empty())
+                            .unwrap();
+                    }
                 }
             }
-        }
-        // FIXME: get length
+            // FIXME: get length
 
-        fs.handle(path, &headers).await.into_response()
-    });
-    let render_handler = Router::new().fallback(async move |state: State<AppState>, uri: Uri| {
-        // Trim prefixing & suffixing "/"
-        let path = uri.path().trim_start_matches('/').trim_end_matches('/');
-        tracing::info!("Render request: {}", path);
-        let parsed = match Path::try_from(path) {
-            Ok(p) => p,
-            Err(SegmentParseError::InvalidArgument(arg)) => return (axum::http::StatusCode::BAD_REQUEST, format!("Invalid argument: {}", arg)).into_response(),
-            Err(SegmentParseError::DecodeError(value)) => return (axum::http::StatusCode::BAD_REQUEST, format!("Decode error: {}", value)).into_response(),
-        };
+            fs.handle(path, &headers).await.into_response()
+        },
+    );
+    let render_handler = Router::new()
+        .fallback(async move |state: State<AppState>, uri: Uri| {
+            // Trim prefixing & suffixing "/"
+            let path = uri.path().trim_start_matches('/').trim_end_matches('/');
+            tracing::info!("Render request: {}", path);
+            let parsed = match Path::try_from(path) {
+                Ok(p) => p,
+                Err(SegmentParseError::InvalidArgument(arg)) => {
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        format!("Invalid argument: {}", arg),
+                    )
+                        .into_response();
+                }
+                Err(SegmentParseError::DecodeError(value)) => {
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        format!("Decode error: {}", value),
+                    )
+                        .into_response();
+                }
+            };
 
-        match render(&state.db, parsed).await {
-            Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Internal server error: {}", e)).into_response(),
-            Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response(),
-            Ok(Some(layout)) => Json(layout).into_response(),
-        }
-    })
-    .layer(tower_http::compression::CompressionLayer::new());
+            match render(&state.db, parsed).await {
+                Err(e) => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Internal server error: {}", e),
+                )
+                    .into_response(),
+                Ok(None) => {
+                    (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response()
+                }
+                Ok(Some(layout)) => Json(layout).into_response(),
+            }
+        })
+        .layer(tower_http::compression::CompressionLayer::new());
 
-    let state = AppState {
-        db
-    };
+    let state = AppState { db };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

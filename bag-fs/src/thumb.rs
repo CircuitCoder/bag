@@ -2,9 +2,9 @@ use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::software::scaling::{context::Context as Scaler, flag::Flags};
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
-use thiserror::Error;
 use std::io::Cursor;
 use std::path::Path;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ThumbnailError {
@@ -83,11 +83,12 @@ pub async fn extract_thumbnail(video: &Path) -> Result<Vec<u8>, ThumbnailError> 
                     }
 
                     // Convert to an `image` crate buffer
-                    let img_buffer =
-                        ImageBuffer::<Rgb<u8>, _>::from_raw(width, height, raw_pixels)
-                            .ok_or_else(|| ThumbnailError::General(
-                                "Failed to reconstruct image buffer from raw pixels".to_owned()
-                            ))?;
+                    let img_buffer = ImageBuffer::<Rgb<u8>, _>::from_raw(width, height, raw_pixels)
+                        .ok_or_else(|| {
+                            ThumbnailError::General(
+                                "Failed to reconstruct image buffer from raw pixels".to_owned(),
+                            )
+                        })?;
                     let dynamic_img = DynamicImage::ImageRgb8(img_buffer);
 
                     // Encode into an in-memory byte vector
@@ -99,7 +100,9 @@ pub async fn extract_thumbnail(video: &Path) -> Result<Vec<u8>, ThumbnailError> 
             }
         }
 
-        Err(ThumbnailError::General("Reached end of file without successfully decoding a video frame.".to_owned()))
+        Err(ThumbnailError::General(
+            "Reached end of file without successfully decoding a video frame.".to_owned(),
+        ))
     })
     .await?
 }

@@ -1,6 +1,9 @@
 /* Iterate through the filesystem tree */
 
-use std::{path::{Path, PathBuf}, sync::{Arc, atomic::AtomicI64}};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicI64},
+};
 
 use bag_fs::thumb::extract_thumbnail;
 use chrono::{DateTime, Utc};
@@ -77,7 +80,11 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         let length = metadata.len() as i64;
         let is_dir = metadata.is_dir();
 
-        async fn set_thumbnail(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, id: i64, thumb: &[u8]) -> anyhow::Result<()> {
+        async fn set_thumbnail(
+            tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+            id: i64,
+            thumb: &[u8],
+        ) -> anyhow::Result<()> {
             // Upsert into the thumbnails table
             sqlx::query!(
                 "INSERT INTO thumbnails (file_id, thumbnail, mime) VALUES (?, ?, 'image/webp') ON CONFLICT(file_id) DO UPDATE SET thumbnail = excluded.thumbnail, mime = excluded.mime",
@@ -128,10 +135,9 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             set_thumbnail(&mut tx, cur.id, t).await?;
         } else {
             // Delete thumbnail if exists
-            sqlx::query!(
-                "DELETE FROM thumbnails WHERE file_id = ?",
-                cur.id,
-            ).execute(&mut *tx).await?;
+            sqlx::query!("DELETE FROM thumbnails WHERE file_id = ?", cur.id,)
+                .execute(&mut *tx)
+                .await?;
         }
 
         // If unchanged, don't mark children as stale
@@ -260,14 +266,26 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                         if ty == "video" {
                             match extract_thumbnail(entry.path().as_ref()).await {
                                 Err(e) => {
-                                    tracing::error!("Failed to extract thumbnail for {}: {}", child_path.display(), e);
+                                    tracing::error!(
+                                        "Failed to extract thumbnail for {}: {}",
+                                        child_path.display(),
+                                        e
+                                    );
                                 }
                                 Ok(v) => thumb = Some(v),
                             }
                         }
                     }
-                    let (cid, _) =
-                        update_file(&db, child_path.as_path(), &metadata, Some(id), scan_id, true, thumb.as_deref()).await?;
+                    let (cid, _) = update_file(
+                        &db,
+                        child_path.as_path(),
+                        &metadata,
+                        Some(id),
+                        scan_id,
+                        true,
+                        thumb.as_deref(),
+                    )
+                    .await?;
                     tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
                     // Explicitly drops the permit inside the closure to move

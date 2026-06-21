@@ -33,18 +33,23 @@ impl<'s> TryFrom<&'s str> for Segment<'s> {
         let segment = urlencoding::decode(first).map_err(SegmentParseError::DecodeError)?;
 
         let collected = if let Some((_, next)) = split {
-            let collected: Result<HashMap<Cow<'_, str>, Cow<'_, str>>, Self::Error> = next.split(",").map(|arg| {
-                let equal_cnt = arg.matches("=").count();
-                if equal_cnt != 1 {
-                    return Err(SegmentParseError::InvalidArgument(arg.to_string()));
-                }
-                let (k_raw, v_raw) = arg.split_once("=").unwrap();
-                let k = urlencoding::decode(k_raw).map_err(SegmentParseError::DecodeError)?;
-                let v = urlencoding::decode(v_raw).map_err(SegmentParseError::DecodeError)?;
-                Ok((k, v))
-            }).collect();
+            let collected: Result<HashMap<Cow<'_, str>, Cow<'_, str>>, Self::Error> = next
+                .split(",")
+                .map(|arg| {
+                    let equal_cnt = arg.matches("=").count();
+                    if equal_cnt != 1 {
+                        return Err(SegmentParseError::InvalidArgument(arg.to_string()));
+                    }
+                    let (k_raw, v_raw) = arg.split_once("=").unwrap();
+                    let k = urlencoding::decode(k_raw).map_err(SegmentParseError::DecodeError)?;
+                    let v = urlencoding::decode(v_raw).map_err(SegmentParseError::DecodeError)?;
+                    Ok((k, v))
+                })
+                .collect();
             collected?
-        } else { HashMap::new() };
+        } else {
+            HashMap::new()
+        };
 
         Ok(Segment(segment, collected))
     }
@@ -65,11 +70,12 @@ impl ToString for Path<'_> {
     }
 }
 
-impl <'s> TryFrom<&'s str> for Path<'s> {
+impl<'s> TryFrom<&'s str> for Path<'s> {
     type Error = SegmentParseError;
 
     fn try_from(s: &'s str) -> Result<Self, Self::Error> {
-        let segments: Result<Vec<Segment>, Self::Error> = s.split("/").map(Segment::try_from).collect();
+        let segments: Result<Vec<Segment>, Self::Error> =
+            s.split("/").map(Segment::try_from).collect();
         // There is at least one
         Ok(Path(Cow::Owned(segments?)))
     }
@@ -87,7 +93,9 @@ impl<'s> Path<'s> {
     }
 
     pub fn last(&self) -> &Segment<'s> {
-        self.0.last().expect("Path should have at least one segment")
+        self.0
+            .last()
+            .expect("Path should have at least one segment")
     }
 
     pub fn to_bare_string(&self) -> String {

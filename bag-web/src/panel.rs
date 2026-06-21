@@ -8,7 +8,9 @@ use crate::Context;
 
 fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component) -> AnyView {
     match comp {
-        bag_lib::ui::Component::Text(Text { content }) => view! { <div class="rendered-text">{content.clone()}</div> }.into_any(),
+        bag_lib::ui::Component::Text(Text { content }) => {
+            view! { <div class="rendered-text">{content.clone()}</div> }.into_any()
+        }
         bag_lib::ui::Component::Image(Image { resource }) => {
             let mime = mime_guess::from_path(&resource).first_or_octet_stream();
             let mime_type = mime.type_().as_str();
@@ -19,7 +21,8 @@ fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component)
             }
             view! {
                 <img class="rendered-img" src={format!("{backend}/raw/{resource}")} />
-            }.into_any()
+            }
+            .into_any()
         }
         // bag_lib::ui::Component::Button(label) => view! { <button>{label}</button> }.into_any(),
         bag_lib::ui::Component::Gallery(Gallery { images }) => {
@@ -78,16 +81,14 @@ fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component)
                 <div class="rendered-gallery">
                     {items}
                 </div>
-            }.into_any()
+            }
+            .into_any()
         }
     }
 }
 
 #[component]
-pub fn Panel(
-    backend: ReadSignal<String>,
-    path: ReadSignal<String>,
-) -> impl IntoView {
+pub fn Panel(backend: ReadSignal<String>, path: ReadSignal<String>) -> impl IntoView {
     let ctx: Option<Context> = use_context();
     if ctx.is_none() {
         web_sys::console::error_1(&"Panel component must be used within a Context provider".into());
@@ -105,15 +106,20 @@ pub fn Panel(
     });
 
     let inner = move || match layout.get() {
-        None => { view! { <div>"Loading..."</div> }.into_any() }
-        Some(Err(err)) => { view! { <div>"Error: " {err.to_string()}</div> }.into_any() }
+        None => view! { <div>"Loading..."</div> }.into_any(),
+        Some(Err(err)) => view! { <div>"Error: " {err.to_string()}</div> }.into_any(),
         Some(Ok(layout)) => {
-            let main = layout.main.iter().map(|comp| render_component(&backend.get(), &ctx, comp)).collect::<Vec<_>>();
+            let main = layout
+                .main
+                .iter()
+                .map(|comp| render_component(&backend.get(), &ctx, comp))
+                .collect::<Vec<_>>();
             view! {
                 <main>
                     {main}
                 </main>
-            }.into_any()
+            }
+            .into_any()
         }
     };
 

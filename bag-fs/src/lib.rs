@@ -1,7 +1,7 @@
 use thiserror::Error;
 
-pub mod fs;
 pub mod etag;
+pub mod fs;
 pub mod thumb;
 
 #[derive(Error, Debug)]

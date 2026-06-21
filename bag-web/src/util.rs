@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use web_sys::{Response, js_sys::futures::JsFuture, wasm_bindgen::{JsCast, JsValue}};
+use web_sys::{
+    Response,
+    js_sys::futures::JsFuture,
+    wasm_bindgen::{JsCast, JsValue},
+};
 
 #[derive(Clone, Debug)]
 pub enum FetchError {

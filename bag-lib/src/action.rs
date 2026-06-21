@@ -4,5 +4,5 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type")]
 pub enum Action {
     /// Navigate to another path
-    Navigate { to: String }
+    Navigate { to: String },
 }

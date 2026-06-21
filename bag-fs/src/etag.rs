@@ -1,4 +1,7 @@
-use std::{hash::{Hash, Hasher}, time::SystemTime};
+use std::{
+    hash::{Hash, Hasher},
+    time::SystemTime,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Etag {

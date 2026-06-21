@@ -33,7 +33,10 @@ fn parse_range(headers: &HeaderMap, length: u64) -> Result<Option<Range<u64>>> {
     let start_str = start_str.trim();
     let end_str = end_str.trim();
 
-    let parse = |s: &str| s.parse::<u64>().map_err(|_| crate::Error::RangeUnsatisfiable);
+    let parse = |s: &str| {
+        s.parse::<u64>()
+            .map_err(|_| crate::Error::RangeUnsatisfiable)
+    };
 
     let (start, end) = if start_str.is_empty() {
         // Suffix range `bytes=-N`: the last N bytes.
@@ -88,7 +91,10 @@ impl FsHandler {
         let length = metadata.len();
         let etag = Etag { mtime, length };
         let encoded_etag = etag.hash_string();
-        if let Some(in_etag) = header.get(axum::http::header::IF_NONE_MATCH).and_then(|e| e.to_str().ok()) {
+        if let Some(in_etag) = header
+            .get(axum::http::header::IF_NONE_MATCH)
+            .and_then(|e| e.to_str().ok())
+        {
             if etag.check_header(in_etag) {
                 return Ok(Response::builder()
                     .status(304)
@@ -133,7 +139,7 @@ impl FsHandler {
         if let Some(Range { start, end }) = range {
             resp = resp.header(
                 axum::http::header::CONTENT_RANGE,
-                format!("bytes {}-{}/{}", start, end-1, length),
+                format!("bytes {}-{}/{}", start, end - 1, length),
             );
         }
         return Ok(resp.body(Body::from_stream(stream)).unwrap());
