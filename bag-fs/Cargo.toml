@@ -9,3 +9,5 @@ tokio = { workspace = true, features = ["fs"] }
 axum = { workspace = true }
 mime_guess = "2.0.5"
 tokio-util = { version = "0.7.18", features = ["io"] }
+image = "0.25.10"
+ffmpeg-next = "8.1.0"

@@ -36,4 +36,15 @@ CREATE TABLE scans (
   started_at DATETIME NOT NULL,
   file_num INTEGER NOT NULL,
   finished_at DATETIME
-)
+);
+
+-- Thumbnail data
+CREATE TABLE thumbnails (
+    file_id INTEGER PRIMARY KEY,
+    thumbnail BLOB NOT NULL,
+    mime TEXT NOT NULL,
+
+    FOREIGN KEY (file_id)
+        REFERENCES files(id)
+        ON DELETE CASCADE
+);

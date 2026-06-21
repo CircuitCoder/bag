@@ -2,6 +2,7 @@ use thiserror::Error;
 
 pub mod fs;
 pub mod etag;
+pub mod thumb;
 
 #[derive(Error, Debug)]
 pub enum Error {

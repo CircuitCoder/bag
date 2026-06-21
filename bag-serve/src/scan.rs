@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use bag_fs::thumb::extract_thumbnail;
 use chrono::{DateTime, Utc};
 use indicatif::ProgressStyle;
 
@@ -60,6 +61,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         parent: Option<i64>,
         scan_id: i64,
         mark_stale: bool,
+        thumb: Option<&[u8]>,
     ) -> anyhow::Result<(i64, bool)> {
         let mut tx = db.as_ref().begin().await?;
         let path = &path
@@ -73,6 +75,16 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         let length = metadata.len() as i64;
         let is_dir = metadata.is_dir();
 
+        async fn set_thumbnail(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, id: i64, thumb: &[u8]) -> anyhow::Result<()> {
+            // Upsert into the thumbnails table
+            sqlx::query!(
+                "INSERT INTO thumbnails (file_id, thumbnail, mime) VALUES (?, ?, 'image/webp') ON CONFLICT(file_id) DO UPDATE SET thumbnail = excluded.thumbnail, mime = excluded.mime",
+                id,
+                thumb,
+            ).execute(&mut **tx).await?;
+            Ok(())
+        }
+
         let Some(cur) = cur else {
             let inserted = sqlx::query!(
                 "INSERT INTO files (path, mtime, length, scan_id, parent, is_directory) VALUES (?, ?, ?, ?, ?, ?)",
@@ -83,6 +95,9 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                 parent,
                 is_dir, // TODO: archive
             ).execute(&mut *tx).await?.last_insert_rowid();
+            if let Some(t) = thumb {
+                set_thumbnail(&mut tx, inserted, t).await?;
+            }
             tx.commit().await?;
             return Ok((inserted, true));
         };
@@ -106,6 +121,16 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             is_dir, // TODO: archive
             cur.id,
         ).execute(&mut *tx).await?;
+
+        if let Some(t) = thumb {
+            set_thumbnail(&mut tx, cur.id, t).await?;
+        } else {
+            // Delete thumbnail if exists
+            sqlx::query!(
+                "DELETE FROM thumbnails WHERE file_id = ?",
+                cur.id,
+            ).execute(&mut *tx).await?;
+        }
 
         // If unchanged, don't mark children as stale
         if cur.mtime >= mtime {
@@ -153,6 +178,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         None,
         scan_id,
         base.as_ref().is_empty(),
+        None,
     )
     .await?;
 
@@ -178,7 +204,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
 
         // TODO: to_string_lossy here is OK?
         let last = cur == base.as_ref();
-        let (id, _) = update_file(&db, &cur, &metadata, Some(parent), scan_id, last).await?;
+        let (id, _) = update_file(&db, &cur, &metadata, Some(parent), scan_id, last, None).await?;
         parent = id;
     }
 
@@ -204,8 +230,24 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             let metadata = entry.metadata().await?;
             bar.inc(1);
             bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
+
+            // Try to extract thumbnail
+            // TODO: skipping generating thumbnail if mtime did not change
+            let mut thumb = None;
+            if metadata.is_file() {
+                let mime = mime_guess::from_path(&child_path).first_or_octet_stream();
+                let ty = mime.type_().as_str();
+                if ty == "video" {
+                    match extract_thumbnail(entry.path().as_ref()).await {
+                        Err(e) => {
+                            tracing::error!("Failed to extract thumbnail for {}: {}", child_path.display(), e);
+                        }
+                        Ok(v) => thumb = Some(v),
+                    }
+                }
+            }
             let (cid, _) =
-                update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true).await?;
+                update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true, thumb.as_deref()).await?;
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
