@@ -1,6 +1,6 @@
 /* Iterate through the filesystem tree */
 
-use std::path::{Path, PathBuf};
+use std::{path::{Path, PathBuf}, sync::{Arc, atomic::AtomicI64}};
 
 use bag_fs::thumb::extract_thumbnail;
 use chrono::{DateTime, Utc};
@@ -212,66 +212,99 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     // This is done through a recursion
     // Assume the base is already updated last level. ID is the ID of the base, not its parent.
     // Calling this function currently implies that base is a directory
-    async fn walk(
-        db: &Database,
-        root: &Path,
+    fn walk(
+        db: Database,
+        root: PathBuf,
         scan_id: i64,
-        base: &Path,
+        base: PathBuf,
         id: i64,
-        counter: &mut i64,
-        bar: &mut indicatif::ProgressBar,
-    ) -> anyhow::Result<()> {
-        let joined = root.join(base);
-        let mut entries = tokio::fs::read_dir(joined).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            *counter += 1;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let child_path = base.join(name);
-            let metadata = entry.metadata().await?;
-            bar.inc(1);
-            bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
+        counter: Arc<AtomicI64>,
+        bar: indicatif::ProgressBar,
+        sem: Option<Arc<tokio::sync::Semaphore>>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async move {
+            let joined = root.join(&base);
+            let mut entries = tokio::fs::read_dir(joined).await?;
+            let mut children = Vec::new();
+            while let Some(entry) = entries.next_entry().await? {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let child_path = base.join(name);
+                let metadata = entry.metadata().await?;
 
-            // Try to extract thumbnail
-            // TODO: skipping generating thumbnail if mtime did not change
-            let mut thumb = None;
-            if metadata.is_file() {
-                let mime = mime_guess::from_path(&child_path).first_or_octet_stream();
-                let ty = mime.type_().as_str();
-                if ty == "video" {
-                    match extract_thumbnail(entry.path().as_ref()).await {
-                        Err(e) => {
-                            tracing::error!("Failed to extract thumbnail for {}: {}", child_path.display(), e);
+                let permit = if let Some(ref s) = sem {
+                    Some(s.clone().acquire_owned().await?)
+                } else {
+                    None
+                };
+
+                let bar = bar.clone();
+                let counter = counter.clone();
+                let db = db.clone();
+                let root = root.clone();
+                let sem = sem.clone();
+                let handle = tokio::spawn(async move {
+                    let new = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    bar.inc(1);
+                    bar.set_message(format!("Scanning {}: {}", new, child_path.display()));
+
+                    // Try to extract thumbnail
+                    // TODO: skipping generating thumbnail if mtime did not change
+
+                    // Parallelize thumbnail extraction
+                    let mut thumb = None;
+                    if metadata.is_file() {
+                        let mime = mime_guess::from_path(&child_path).first_or_octet_stream();
+                        let ty = mime.type_().as_str();
+                        if ty == "video" {
+                            match extract_thumbnail(entry.path().as_ref()).await {
+                                Err(e) => {
+                                    tracing::error!("Failed to extract thumbnail for {}: {}", child_path.display(), e);
+                                }
+                                Ok(v) => thumb = Some(v),
+                            }
                         }
-                        Ok(v) => thumb = Some(v),
                     }
-                }
-            }
-            let (cid, _) =
-                update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true, thumb.as_deref()).await?;
-            tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
+                    let (cid, _) =
+                        update_file(&db, child_path.as_path(), &metadata, Some(id), scan_id, true, thumb.as_deref()).await?;
+                    tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
-            if metadata.is_dir() {
-                Box::pin(walk(db, root, scan_id, &child_path, cid, counter, bar)).await?;
+                    // Explicitly drops the permit inside the closure to move
+                    // it into the async block
+                    // Dropped before recursion to avoid deadlock.
+                    drop(permit);
+
+                    if metadata.is_dir() {
+                        walk(db, root, scan_id, child_path, cid, counter, bar, sem).await?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                });
+                children.push(handle);
             }
+
+            for child in children {
+                child.await??;
+            }
+
+            Ok(())
         }
-
-        Ok(())
     }
 
-    let mut counter = 1;
-    let mut bar = indicatif::ProgressBar::new_spinner()
+    let counter = Arc::new(AtomicI64::new(1));
+    let bar = indicatif::ProgressBar::new_spinner()
         .with_style(
             ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
         )
         .with_message(format!("Scanning 1: {}", base.as_ref().display()));
+    let sem = Arc::new(tokio::sync::Semaphore::new(16));
     walk(
-        db,
-        root.as_ref(),
+        db.clone(),
+        root.as_ref().to_path_buf(),
         scan_id,
-        base.as_ref(),
+        base.as_ref().to_path_buf(),
         parent,
-        &mut counter,
-        &mut bar,
+        counter.clone(),
+        bar,
+        Some(sem),
     )
     .await?;
 
@@ -286,9 +319,10 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     // 3. Finalize the scan metadata. file_num comes from the iteration counter
     //    rather than a COUNT(*) so that concurrent scans don't corrupt it.
     let finished_at = Utc::now();
+    let counter_val = counter.load(std::sync::atomic::Ordering::Relaxed);
     sqlx::query!(
         "UPDATE scans SET file_num = ?, finished_at = ? WHERE id = ?",
-        counter,
+        counter_val,
         finished_at,
         scan_id,
     )
