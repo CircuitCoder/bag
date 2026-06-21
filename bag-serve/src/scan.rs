@@ -41,6 +41,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     root: P1, // The root of the entire tree
     base: P2, // Scanning from here
     db: &Database,
+    concurrency: usize,
 ) -> anyhow::Result<()> {
     sanitize_base_path(base.as_ref())?;
 
@@ -295,7 +296,11 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
         )
         .with_message(format!("Scanning 1: {}", base.as_ref().display()));
-    let sem = Arc::new(tokio::sync::Semaphore::new(16));
+    let sem = if concurrency == 0 {
+        None
+    } else {
+        Some(Arc::new(tokio::sync::Semaphore::new(concurrency)))
+    };
     walk(
         db.clone(),
         root.as_ref().to_path_buf(),
@@ -304,7 +309,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         parent,
         counter.clone(),
         bar,
-        Some(sem),
+        sem,
     )
     .await?;
 

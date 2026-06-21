@@ -35,6 +35,9 @@ enum Command {
     Rescan {
         #[clap(default_value = "")]
         base: OsString, // OsString opt-out non-empty check
+
+        #[clap(default_value = "16")]
+        concurrency: usize,
     },
 }
 
@@ -76,8 +79,8 @@ async fn main() -> anyhow::Result<()> {
             let binder = tokio::net::TcpListener::bind((bind, port)).await?;
             axum::serve(binder, app).await?;
         }
-        Command::Rescan { base } => {
-            scan::rescan(&args.root, &base, &db).await?;
+        Command::Rescan { base, concurrency } => {
+            scan::rescan(&args.root, &base, &db, concurrency).await?;
         }
         _ => unreachable!(),
     }
