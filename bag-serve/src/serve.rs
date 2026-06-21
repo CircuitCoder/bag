@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use axum::{Json, Router, extract::State, http::Uri, response::IntoResponse};
 use bag_fs::fs::FsHandler;
-use bag_lib::{path::{Path, SegmentParseError}, ui::{Component, Gallery, GalleryImage, Image, Layout, Text}};
+use bag_lib::{action::Action, path::{Path, SegmentParseError}, ui::{Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text}};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::Database;
@@ -41,8 +41,10 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
 
         let images = children.into_iter().map(
             |row| GalleryImage {
+                ty: if row.is_directory { GalleryImageType::Directory } else { GalleryImageType::File },
                 thumbnail: if row.is_directory { None } else { Some(row.path.clone()) },
-                name: row.path.rsplit_once("/").map(|e| e.1.to_owned()).unwrap_or(row.path),
+                name: row.path.rsplit_once("/").map(|e| e.1.to_owned()).unwrap_or(row.path.clone()),
+                action: Some(Action::Navigate { to: row.path }),
             }
         ).collect();
 

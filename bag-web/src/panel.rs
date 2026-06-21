@@ -4,7 +4,9 @@ use leptos::prelude::*;
 
 use bag_lib::ui::*;
 
-fn render_component(backend: &str, comp: &bag_lib::ui::Component) -> AnyView {
+use crate::Context;
+
+fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component) -> AnyView {
     match comp {
         bag_lib::ui::Component::Text(Text { content }) => view! { <div class="rendered-text">{content.clone()}</div> }.into_any(),
         bag_lib::ui::Component::Image(Image { resource }) => view! { <img class="rendered-img" src={format!("{backend}/raw/{resource}")} /> }.into_any(),
@@ -42,12 +44,23 @@ fn render_component(backend: &str, comp: &bag_lib::ui::Component) -> AnyView {
                     }.into_any()
                 });
 
-                view! {
-                    <div class="rendered-gallery-img" data-name={&img.name}>
-                        {thumbnail}
-                    </div>
+                match img.action {
+                    Some(bag_lib::action::Action::Navigate { to: ref p }) => {
+                        let p = p.clone();
+                        let ctx = ctx.clone();
+                        view! {
+                            <div class="rendered-gallery-img" data-name={&img.name} on:click={move |_| {
+                                ctx.navigate(&p);
+                            }}>{thumbnail}</div>
+                        }.into_any()
+                    }
+                    None => {
+                        view! {
+                            <div class="rendered-gallery-img" data-name={&img.name}>{thumbnail}</div>
+                        }.into_any()
+                    }
                 }
-            }.into_any()).collect();
+            }).collect();
 
             view! {
                 <div class="rendered-gallery">
@@ -63,6 +76,13 @@ pub fn Panel(
     backend: ReadSignal<String>,
     path: ReadSignal<String>,
 ) -> impl IntoView {
+    let ctx: Option<Context> = use_context();
+    if ctx.is_none() {
+        web_sys::console::error_1(&"Panel component must be used within a Context provider".into());
+    }
+
+    let ctx: Context = use_context().expect("WTF");
+
     let layout = LocalResource::new(move || async move {
         let backend = backend.get();
         let path = path.get();
@@ -76,7 +96,7 @@ pub fn Panel(
         None => { view! { <div>"Loading..."</div> }.into_any() }
         Some(Err(err)) => { view! { <div>"Error: " {err.to_string()}</div> }.into_any() }
         Some(Ok(layout)) => {
-            let main = layout.main.iter().map(|comp| render_component(&backend.get(), comp)).collect::<Vec<_>>();
+            let main = layout.main.iter().map(|comp| render_component(&backend.get(), &ctx, comp)).collect::<Vec<_>>();
             view! {
                 <main>
                     {main}

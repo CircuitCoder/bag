@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::action::Action;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Component {
@@ -34,10 +36,17 @@ pub struct Image {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GalleryImageType {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GalleryImage {
+    pub ty: GalleryImageType,
     pub thumbnail: Option<String>,
     pub name: String,
-    // TODO: click action
+    pub action: Option<Action>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
