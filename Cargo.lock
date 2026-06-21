@@ -276,6 +276,7 @@ dependencies = [
  "bag-lib",
  "leptos",
  "leptos_router",
+ "mime_guess",
  "serde",
  "serde_json",
  "web-sys",
