@@ -9,7 +9,18 @@ use crate::Context;
 fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component) -> AnyView {
     match comp {
         bag_lib::ui::Component::Text(Text { content }) => view! { <div class="rendered-text">{content.clone()}</div> }.into_any(),
-        bag_lib::ui::Component::Image(Image { resource }) => view! { <img class="rendered-img" src={format!("{backend}/raw/{resource}")} /> }.into_any(),
+        bag_lib::ui::Component::Image(Image { resource }) => {
+            let mime = mime_guess::from_path(&resource).first_or_octet_stream();
+            let mime_type = mime.type_().as_str();
+            if mime_type == "video" {
+                return view! {
+                    <video class="rendered-video" src={format!("{backend}/raw/{resource}")} controls loop />
+                }.into_any();
+            }
+            view! {
+                <img class="rendered-img" src={format!("{backend}/raw/{resource}")} />
+            }.into_any()
+        }
         // bag_lib::ui::Component::Button(label) => view! { <button>{label}</button> }.into_any(),
         bag_lib::ui::Component::Gallery(Gallery { images }) => {
             let items: Vec<_> = images.into_iter().map(|img| {
@@ -21,6 +32,7 @@ fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component)
                         Some(view! {
                             <img
                                 class="rendered-gallery-thumbnail-img"
+                                loading="lazy"
                                 src={format!("{backend}/raw/{t}")} />
                         }.into_any())
                     } else if mime_type == "video" {
@@ -32,7 +44,7 @@ fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component)
                               muted
                               playsinline>
                             </video>
-                        }.into_any())
+                        }.attr("loading", "lazy").into_any())
                     } else {
                         None
                     }

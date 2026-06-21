@@ -1,10 +1,10 @@
 // Default fs handler
 
-use axum::{body::Body, http::Uri, response::Response};
+use axum::{body::Body, response::Response};
 use std::path::PathBuf;
 use tokio_util::io::ReaderStream;
 
-use crate::Result;
+use crate::{Result, etag::Etag};
 
 #[derive(Clone)]
 pub struct FsHandler {
@@ -21,53 +21,30 @@ impl FsHandler {
         // FIXME: path canonicalization
         // FIXME: empty path segment
 
-        let mut cur = self.root.clone();
-        let mut remaining = path;
-
-        loop {
-            // Try to check the type of cur
-            let metadata = tokio::fs::metadata(&cur).await?;
-
-            if metadata.is_dir() {
-                if remaining.is_empty() {
-                    return Err(crate::Error::NotFound);
-                }
-
-                let (first, second) = remaining.split_once('/').unwrap_or((remaining, ""));
-                cur.push(first);
-                remaining = second;
-
-                continue;
-            }
-
-            // First, see if we've exausted the path
-            if remaining.is_empty() {
-                let mime = mime_guess::from_path(&cur).first_or_octet_stream();
-                let file = tokio::fs::File::open(&cur).await?;
-                let stream = ReaderStream::new(file);
-                return Ok(Response::builder()
-                    .header("Content-Type", mime.to_string())
-                    .body(Body::from_stream(stream))
-                    .unwrap());
-                // TODO: handle range, last-modified
-                // Etag is done in tower
-            }
-
-            // Guess the file type based on extension name
-            let _ext = cur.extension();
-
-            // TODO: if this is a known archive type, goto the archive handler
-            // Right now we don't have any
-
-            // Finally, returns not found
+        // TODO: binary search
+        let tgt = self.root.join(path);
+        let metadata = tokio::fs::metadata(&tgt).await?;
+        if metadata.is_dir() {
             return Err(crate::Error::NotFound);
         }
+
+        let mtime = metadata.modified()?;
+        let length = metadata.len();
+        let etag = Etag { mtime, length }.hash_string();
+
+        let mime = mime_guess::from_path(&tgt).first_or_octet_stream();
+        let file = tokio::fs::File::open(&tgt).await?;
+        let stream = ReaderStream::new(file);
+        return Ok(Response::builder()
+            .header("Content-Type", mime.to_string())
+            .header("Etag", etag)
+            .body(Body::from_stream(stream))
+            .unwrap());
+        // TODO: handle range
+        // Etag is done in tower
     }
 
-    pub async fn handle(&self, uri: Uri) -> Response {
-        // Ignores query
-        let path = uri.path();
-
+    pub async fn handle(&self, path: &str) -> Response {
         match self.load_fs(path).await {
             Err(crate::Error::NotFound) => {
                 return Response::builder()

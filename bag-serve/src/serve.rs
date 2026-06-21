@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use axum::{Json, Router, extract::State, http::Uri, response::IntoResponse};
-use bag_fs::fs::FsHandler;
+use axum::{Json, Router, extract::State, http::{HeaderMap, Uri}, response::IntoResponse};
+use bag_fs::{etag::Etag, fs::FsHandler};
 use bag_lib::{action::Action, path::{Path, SegmentParseError}, ui::{Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text}};
+use chrono::{DateTime, Utc};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::Database;
@@ -78,7 +79,27 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
 
 pub fn build(db: Database, root: PathBuf) -> Router {
     let fs = FsHandler::new(root);
-    let raw_handler = Router::new().fallback(async move |uri: Uri| fs.handle(uri).await);
+    let raw_handler = Router::new().fallback(async move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
+        let path = uri.path();
+        let path = path.trim_start_matches('/');
+        // Query fs for the file mtime
+        let metadata = sqlx::query!(r#"SELECT mtime AS "mtime: DateTime<Utc>", length FROM files WHERE path = ?"#, path)
+            .fetch_optional(state.db.as_ref())
+            .await;
+
+        if let Some(etag) = headers.get(axum::http::header::IF_NONE_MATCH).and_then(|e| e.to_str().ok()) {
+            if let Ok(Some(metadata)) = metadata {
+                let mtime: std::time::SystemTime = metadata.mtime.into();
+                let ref_etag = Etag { mtime, length: metadata.length as u64 }.hash_string();
+                if etag == ref_etag {
+                    return (axum::http::StatusCode::NOT_MODIFIED, "Not modified".to_string()).into_response();
+                }
+            }
+        }
+        // FIXME: get length
+
+        fs.handle(path).await.into_response()
+    });
     let render_handler = Router::new().fallback(async move |state: State<AppState>, uri: Uri| {
         // Trim prefixing & suffixing "/"
         let path = uri.path().trim_start_matches('/').trim_end_matches('/');
@@ -94,7 +115,8 @@ pub fn build(db: Database, root: PathBuf) -> Router {
             Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response(),
             Ok(Some(layout)) => Json(layout).into_response(),
         }
-    });
+    })
+    .layer(tower_http::compression::CompressionLayer::new());
 
     let state = AppState {
         db

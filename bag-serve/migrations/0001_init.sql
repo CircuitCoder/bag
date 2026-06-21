@@ -4,6 +4,7 @@ CREATE TABLE files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT NOT NULL, -- Filename already embedded here. Relative to the root of the tree
   mtime DATETIME NOT NULL,
+  length INTEGER NOT NULL,
   scan_id INTEGER NOT NULL, -- The epoch of the last scanning task that saw this file. Used to remove the file at the end of the scan.
 
   -- The DIRECT PARENT of this file (a directory). NULL if this is the top-level directory itself

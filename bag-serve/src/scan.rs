@@ -70,13 +70,15 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             path
         ).fetch_optional(&mut *tx).await?;
         let mtime = DateTime::<Utc>::from(metadata.modified()?);
+        let length = metadata.len() as i64;
         let is_dir = metadata.is_dir();
 
         let Some(cur) = cur else {
             let inserted = sqlx::query!(
-                "INSERT INTO files (path, mtime, scan_id, parent, is_directory) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO files (path, mtime, length, scan_id, parent, is_directory) VALUES (?, ?, ?, ?, ?, ?)",
                 path,
                 mtime,
+                length,
                 scan_id,
                 parent,
                 is_dir, // TODO: archive
@@ -96,9 +98,10 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         // Inside the same TX, so it's guaranteed that scan_id < current scan
         // This clears the is_stale flag
         sqlx::query!(
-            "UPDATE files SET scan_id = ?, mtime = ?, parent = ?, is_directory = ?, is_stale = FALSE WHERE id = ?",
+            "UPDATE files SET scan_id = ?, mtime = ?, length = ?, parent = ?, is_directory = ?, is_stale = FALSE WHERE id = ?",
             scan_id,
             mtime,
+            length,
             parent,
             is_dir, // TODO: archive
             cur.id,

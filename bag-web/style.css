@@ -78,3 +78,10 @@ body {
   align-items: center;
   justify-content: center;
 }
+
+/* Image */
+.rendered-img,
+.rendered-video {
+  width: 100%;
+  height: auto;
+}
