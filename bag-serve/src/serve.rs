@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use axum::{Json, Router, extract::State, http::{HeaderMap, Uri}, response::IntoResponse};
+use axum::{Json, Router, body::Body, extract::State, http::{HeaderMap, Response, Uri}, response::IntoResponse};
 use bag_fs::{etag::Etag, fs::FsHandler};
 use bag_lib::{action::Action, path::{Path, SegmentParseError}, ui::{Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text}};
 use chrono::{DateTime, Utc};
@@ -90,15 +90,20 @@ pub fn build(db: Database, root: PathBuf) -> Router {
         if let Some(etag) = headers.get(axum::http::header::IF_NONE_MATCH).and_then(|e| e.to_str().ok()) {
             if let Ok(Some(metadata)) = metadata {
                 let mtime: std::time::SystemTime = metadata.mtime.into();
-                let ref_etag = Etag { mtime, length: metadata.length as u64 }.hash_string();
-                if etag == ref_etag {
-                    return (axum::http::StatusCode::NOT_MODIFIED, "Not modified".to_string()).into_response();
+                let ref_etag = Etag { mtime, length: metadata.length as u64 };
+                if ref_etag.check_header(etag) {
+                    return Response::builder()
+                        .status(axum::http::StatusCode::NOT_MODIFIED)
+                        .header("ETag", ref_etag.hash_string())
+                        .header("Cache-Control", "max-age=60, stale-while-revalidate=86400")
+                        .body(Body::empty())
+                        .unwrap();
                 }
             }
         }
         // FIXME: get length
 
-        fs.handle(path).await.into_response()
+        fs.handle(path, &headers).await.into_response()
     });
     let render_handler = Router::new().fallback(async move |state: State<AppState>, uri: Uri| {
         // Trim prefixing & suffixing "/"
