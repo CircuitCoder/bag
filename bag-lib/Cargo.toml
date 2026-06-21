@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+itertools = "0.15.0"
 serde = { version = "1.0.228", features = ["derive"] }
+urlencoding = "2.1.3"

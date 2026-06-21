@@ -7,6 +7,8 @@ use sqlx::{
 };
 
 static MIGRATOR: Migrator = sqlx::migrate!();
+
+#[derive(Clone)]
 pub struct Database {
     db: SqlitePool,
 }

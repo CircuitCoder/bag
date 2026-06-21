@@ -12,30 +12,35 @@ pub enum Component {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout {
-    top: Vec<Component>,
-    main: Vec<Component>,
-    metadata: Vec<Component>,
+    // Primary content
+    pub top: Vec<Component>,
+    pub main: Vec<Component>,
+    pub metadata: Vec<Component>,
+
+    // Left/right swipe destination, preloads
+    pub left: Option<String>,
+    pub right: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Text {
-    content: String,
+    pub content: String,
 }
 
 // Main image, taking full width
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image {
-    resource: String,
+    pub resource: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GalleryImage {
-    thumbnail: String,
-    name: String,
+    pub thumbnail: Option<String>,
+    pub name: String,
     // TODO: click action
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gallery {
-    images: Vec<GalleryImage>,
+    pub images: Vec<GalleryImage>,
 }

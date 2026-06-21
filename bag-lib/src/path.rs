@@ -1,0 +1,96 @@
+use std::{borrow::Cow, collections::HashMap, string::FromUtf8Error};
+
+#[derive(Clone, Debug)]
+pub struct Segment<'a>(Cow<'a, str>, HashMap<Cow<'a, str>, Cow<'a, str>>);
+
+impl ToString for Segment<'_> {
+    fn to_string(&self) -> String {
+        let mut result = urlencoding::encode(self.0.as_ref()).to_string();
+
+        for (k, v) in self.1.iter() {
+            result.push_str(",");
+            result.push_str(&urlencoding::encode(k));
+            result.push_str("=");
+            result.push_str(&urlencoding::encode(v));
+        }
+
+        result
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum SegmentParseError {
+    InvalidArgument(String),
+    DecodeError(FromUtf8Error),
+}
+
+impl<'s> TryFrom<&'s str> for Segment<'s> {
+    type Error = SegmentParseError;
+
+    fn try_from(s: &'s str) -> Result<Self, Self::Error> {
+        let split = s.split_once(",");
+        let first = split.as_ref().map(|(first, _)| *first).unwrap_or(s);
+        let segment = urlencoding::decode(first).map_err(SegmentParseError::DecodeError)?;
+
+        let collected = if let Some((_, next)) = split {
+            let collected: Result<HashMap<Cow<'_, str>, Cow<'_, str>>, Self::Error> = next.split(",").map(|arg| {
+                let equal_cnt = arg.matches("=").count();
+                if equal_cnt != 1 {
+                    return Err(SegmentParseError::InvalidArgument(arg.to_string()));
+                }
+                let (k_raw, v_raw) = arg.split_once("=").unwrap();
+                let k = urlencoding::decode(k_raw).map_err(SegmentParseError::DecodeError)?;
+                let v = urlencoding::decode(v_raw).map_err(SegmentParseError::DecodeError)?;
+                Ok((k, v))
+            }).collect();
+            collected?
+        } else { HashMap::new() };
+
+        Ok(Segment(segment, collected))
+    }
+}
+
+impl Segment<'_> {
+    pub fn arg(&self, key: &str) -> Option<&str> {
+        self.1.get(key).map(|v| v.as_ref())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Path<'a>(Cow<'a, [Segment<'a>]>);
+
+impl ToString for Path<'_> {
+    fn to_string(&self) -> String {
+        itertools::join(self.0.iter().map(|s| s.to_string()), "/")
+    }
+}
+
+impl <'s> TryFrom<&'s str> for Path<'s> {
+    type Error = SegmentParseError;
+
+    fn try_from(s: &'s str) -> Result<Self, Self::Error> {
+        let segments: Result<Vec<Segment>, Self::Error> = s.split("/").map(Segment::try_from).collect();
+        // There is at least one
+        Ok(Path(Cow::Owned(segments?)))
+    }
+}
+
+impl<'s> Path<'s> {
+    pub fn parent(&self) -> Option<Path<'_>> {
+        // If this is a single-segment path, it has no parent
+        if self.0.len() <= 1 {
+            return None;
+        }
+
+        let parent_segments = &self.0[..self.0.len() - 1];
+        Some(Path(Cow::Borrowed(parent_segments)))
+    }
+
+    pub fn last(&self) -> &Segment<'s> {
+        self.0.last().expect("Path should have at least one segment")
+    }
+
+    pub fn to_bare_string(&self) -> String {
+        itertools::join(self.0.iter().map(|s| s.0.as_ref()), "/")
+    }
+}

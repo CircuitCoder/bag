@@ -7,7 +7,9 @@ edition = "2024"
 clap = { version = "4.6.1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 axum = { workspace = true }
+tower-http = { version = "0.5", features = ["cors"] }
 bag-fs = { path = "../bag-fs" }
+bag-lib = { path = "../bag-lib" }
 anyhow = "1.0.102"
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite-unbundled", "chrono" ] }
 chrono = "0.4.45"

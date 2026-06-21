@@ -1,7 +1,5 @@
 use std::{ffi::OsString, net::IpAddr, path::PathBuf};
 
-use axum::{Router, http::Uri};
-use bag_fs::fs::FsHandler;
 use clap::{Parser, Subcommand};
 use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
@@ -10,6 +8,7 @@ use crate::db::Database;
 
 mod db;
 mod scan;
+mod serve;
 
 #[derive(Parser)]
 struct Args {
@@ -73,9 +72,7 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Command::Serve { bind, port } => {
-            let fs = FsHandler::new(args.root.clone());
-            let raw_handler = Router::new().fallback(async move |uri: Uri| fs.handle(uri).await);
-            let app = Router::new().nest("/v1/raw", raw_handler);
+            let app = serve::build(db, args.root);
             let binder = tokio::net::TcpListener::bind((bind, port)).await?;
             axum::serve(binder, app).await?;
         }
