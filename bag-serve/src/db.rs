@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 
 use sqlx::{
     SqlitePool,
@@ -18,6 +18,7 @@ impl Database {
         let opts = SqliteConnectOptions::from_str(url)?
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(1))
             .pragma("journal_size_limit", "67108864") // 64MB
             .pragma("mmap_size", "268435456"); // 256MB
         Ok(opts)

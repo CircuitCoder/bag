@@ -5,6 +5,7 @@ use std::{path::{Path, PathBuf}, sync::{Arc, atomic::AtomicI64}};
 use bag_fs::thumb::extract_thumbnail;
 use chrono::{DateTime, Utc};
 use indicatif::ProgressStyle;
+use tokio::task::JoinSet;
 
 use crate::db::Database;
 
@@ -63,7 +64,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         mark_stale: bool,
         thumb: Option<&[u8]>,
     ) -> anyhow::Result<(i64, bool)> {
-        let mut tx = db.as_ref().begin().await?;
+        let mut tx = db.as_ref().begin_with("BEGIN IMMEDIATE").await?;
         let path = &path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {}", path.display()))?;
@@ -225,7 +226,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         async move {
             let joined = root.join(&base);
             let mut entries = tokio::fs::read_dir(joined).await?;
-            let mut children = Vec::new();
+            let mut children = JoinSet::new();
             while let Some(entry) = entries.next_entry().await? {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let child_path = base.join(name);
@@ -242,7 +243,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                 let db = db.clone();
                 let root = root.clone();
                 let sem = sem.clone();
-                let handle = tokio::spawn(async move {
+                children.spawn(async move {
                     let new = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     bar.inc(1);
                     bar.set_message(format!("Scanning {}: {}", new, child_path.display()));
@@ -278,11 +279,10 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                     }
                     Ok::<_, anyhow::Error>(())
                 });
-                children.push(handle);
             }
 
-            for child in children {
-                child.await??;
+            while let Some(res) = children.join_next().await {
+                res??;
             }
 
             Ok(())
