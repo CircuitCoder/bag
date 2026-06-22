@@ -10,6 +10,7 @@ pub enum Component {
     Text(Text),
     Image(Image),
     Gallery(Gallery),
+    Button(Button),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,8 +26,23 @@ pub struct Layout {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "untagged")]
+enum LayoutOrAction {
+    Layout(Layout),
+    Action(Action),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TextVariant {
+    Title,
+    Body,
+    Hint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Text {
     pub content: String,
+    pub variant: TextVariant,
 }
 
 // Main image, taking full width
@@ -52,4 +68,11 @@ pub struct GalleryImage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gallery {
     pub images: Vec<GalleryImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Button {
+    pub text: String,
+    pub icon: Option<String>,
+    pub action: Action,
 }

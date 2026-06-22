@@ -11,7 +11,7 @@ use bag_fs::{etag::Etag, fs::FsHandler, thumb::{extract_thumbnail_img, extract_t
 use bag_lib::{
     action::Action,
     path::{Path, SegmentParseError},
-    ui::{Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text},
+    ui::{Button, Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, Text},
 };
 use chrono::{DateTime, Utc};
 use tower_http::cors::{Any, CorsLayer};
@@ -25,14 +25,32 @@ struct AppState {
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 
-pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layout>> {
-    let bare = path.to_bare_string();
+pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layout>> {
+    let bare = path.next().map(|e| e.to_bare_string()).unwrap_or("".to_owned());
     let _parent = path.parent();
     let file = sqlx::query!("SELECT * FROM files WHERE path = ?", bare)
         .fetch_optional(db.as_ref())
         .await?;
 
     let Some(file) = file else { return Ok(None) };
+    let name = if path.segments().len() == 1 {
+        "Root"
+    } else {
+        path.last().unwrap().name()
+    };
+
+    let mut metadata = vec![
+        Component::Text(Text { content: name.to_owned(), variant: bag_lib::ui::TextVariant::Title }),
+    ];
+    if let Some(parent) = path.parent() {
+        metadata.push(Component::Text(Text { content: "Path".to_owned(), variant: bag_lib::ui::TextVariant::Hint }));
+        metadata.push(Component::Text(Text { content: file.path.clone(), variant: bag_lib::ui::TextVariant::Body }));
+        metadata.push(Component::Button(Button {
+            text: "Go up".to_owned(),
+            icon: Some("arrow_back".to_owned()),
+            action: Action::Navigate { to: parent.to_bare_string() },
+        }));
+    }
 
     // Fetch self
     let result = if file.is_directory {
@@ -41,11 +59,13 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
 
         let limit = path
             .last()
+            .unwrap()
             .arg("limit")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(DEFAULT_PAGE_SIZE) as i64;
         let offset = path
             .last()
+            .unwrap()
             .arg("offset")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0) as i64;
@@ -81,32 +101,26 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
                     .rsplit_once("/")
                     .map(|e| e.1.to_owned())
                     .unwrap_or(row.path.clone()),
-                action: Some(Action::Navigate { to: row.path }),
+                action: Some(Action::Navigate { to: format!("file/{}", row.path) }),
             })
             .collect();
 
         Layout {
             top: vec![],
             main: vec![Component::Gallery(Gallery { images })],
-            metadata: vec![],
+            metadata,
             left: None,
             right: None,
         }
     } else {
-        let name = file
-            .path
-            .rsplit_once("/")
-            .map(|e| e.1.to_owned())
-            .unwrap_or(file.path.clone());
         Layout {
             top: vec![],
             main: vec![
                 Component::Image(Image {
-                    resource: format!("file/{}", file.path.clone()),
+                    resource: format!("file/{}", file.path),
                 }),
-                Component::Text(Text { content: name }),
             ],
-            metadata: vec![],
+            metadata,
             left: None,
             right: None,
         }
@@ -226,6 +240,7 @@ pub fn build(db: Database, root: PathBuf) -> Router {
             }
         }
     };
+
     let render_handler = Router::new()
         .fallback(async move |state: State<AppState>, uri: Uri| {
             // Trim prefixing & suffixing "/"
@@ -249,16 +264,24 @@ pub fn build(db: Database, root: PathBuf) -> Router {
                 }
             };
 
-            match render(&state.db, parsed).await {
-                Err(e) => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Internal server error: {}", e),
-                )
-                    .into_response(),
-                Ok(None) => {
-                    (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response()
+            if parsed.first().map(|e| e.name()) == Some("file") {
+                match render_file(&state.db, parsed).await {
+                    Err(e) => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Internal server error: {}", e),
+                    )
+                        .into_response(),
+                    Ok(None) => {
+                        (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response()
+                    }
+                    Ok(Some(layout)) => Json(layout).into_response(),
                 }
-                Ok(Some(layout)) => Json(layout).into_response(),
+            } else if parsed.first().is_none() {
+                Json(Action::Navigate {
+                    to: "file".to_owned(),
+                }).into_response()
+            } else {
+                (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response()
             }
         })
         .layer(tower_http::compression::CompressionLayer::new());

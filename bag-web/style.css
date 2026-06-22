@@ -12,28 +12,50 @@ body {
 
   --font-monospace: monospace;
 
+  font-family: var(--font-monospace);
+
   background-color: var(--background);
   color: var(--foreground);
+}
+
+/* Layout */
+main {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+}
+
+.layout-main {
+  align-self: center;
+}
+
+.layout-metadata {
+  position: sticky;
+  top: 0;
+  background: rgba(0, 0, 0, 0.1);
+  padding: 20px;
+  align-self: start;
+  min-height: 100vh;
 }
 
 /* Gallery */
 .rendered-gallery {
   --item-width: 150px;
   --item-height: 150px;
+
   font-family: var(--font-monospace);
   display: grid;
   grid-template-columns: repeat(auto-fit, var(--item-width));
   justify-content: center;
   gap: 10px;
 
-  /* TODO: move to actionable */
-  cursor: pointer;
+  margin: 20px;
 }
 
 .rendered-gallery-img {
   height: calc(2px + var(--item-height));
   width: calc(2px + var(--item-width));
   border: 1px solid rgba(from var(--foreground) r g b / 0.1);
+  cursor: pointer;
 }
 
 .rendered-gallery-thumbnail,
@@ -50,27 +72,25 @@ body {
 
 .rendered-gallery-img {
   position: relative;
-  overflow: hidden;
 }
 
-.rendered-gallery-img:hover::after {
-  transform: translateY(-10px);
+.rendered-gallery-img:hover {
+  border: 1px solid rgba(from var(--foreground) r g b / 0.2);
 }
 
 .rendered-gallery-img::after {
   content: attr(data-name);
   position: absolute;
-  bottom: -20px;
   left: 0;
   right: 0;
-  height: 40px;
+  bottom: 0;
+  height: 20px;
   box-sizing: border-box;
   line-height: 20px;
   background: rgba(from var(--background) r g b / 0.5);
   font-size: 12px;
   padding: 0 5px 20px 5px;
   text-align: center;
-  transition: transform .2s ease;
   text-wrap: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
@@ -88,4 +108,34 @@ body {
 .rendered-video {
   width: 100%;
   height: auto;
+}
+
+/* Text */
+.rendered-text {
+  word-break: break-word;
+}
+
+.rendered-text-title {
+  font-size: 1.6em;
+  font-weight: bold;
+}
+
+.rendered-text-hint {
+  opacity: .3;
+  font-size: 0.7em;
+  margin-top: 20px;
+}
+
+.rendered-button {
+  padding: 5px 15px;
+  outline: none;
+  border: none;
+  background: rgba(from var(--foreground) r g b / 0.1);
+  color: var(--foreground);
+  cursor: pointer;
+  margin-top: 10px
+}
+
+.rendered-text + .rendered-button {
+  margin-top: 20px
 }

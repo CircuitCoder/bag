@@ -56,6 +56,10 @@ impl<'s> TryFrom<&'s str> for Segment<'s> {
 }
 
 impl Segment<'_> {
+    pub fn name(&self) -> &str {
+        self.0.as_ref()
+    }
+
     pub fn arg(&self, key: &str) -> Option<&str> {
         self.1.get(key).map(|v| v.as_ref())
     }
@@ -74,6 +78,10 @@ impl<'s> TryFrom<&'s str> for Path<'s> {
     type Error = SegmentParseError;
 
     fn try_from(s: &'s str) -> Result<Self, Self::Error> {
+        if s == "" {
+            return Ok(Path(Cow::Borrowed(&[])));
+        }
+
         let segments: Result<Vec<Segment>, Self::Error> =
             s.split("/").map(Segment::try_from).collect();
         // There is at least one
@@ -83,7 +91,6 @@ impl<'s> TryFrom<&'s str> for Path<'s> {
 
 impl<'s> Path<'s> {
     pub fn parent(&self) -> Option<Path<'_>> {
-        // If this is a single-segment path, it has no parent
         if self.0.len() <= 1 {
             return None;
         }
@@ -92,10 +99,25 @@ impl<'s> Path<'s> {
         Some(Path(Cow::Borrowed(parent_segments)))
     }
 
-    pub fn last(&self) -> &Segment<'s> {
-        self.0
-            .last()
-            .expect("Path should have at least one segment")
+    pub fn segments(&self) -> &[Segment<'s>] {
+        self.0.as_ref()
+    }
+
+    pub fn last(&self) -> Option<&Segment<'s>> {
+        self.0.last()
+    }
+
+    pub fn first(&self) -> Option<&Segment<'s>> {
+        self.0.first()
+    }
+
+    pub fn next(&self) -> Option<Path<'_>> {
+        if self.0.len() <= 1 {
+            return None;
+        }
+
+        let next_segments = &self.0[1..];
+        Some(Path(Cow::Borrowed(next_segments)))
     }
 
     pub fn to_bare_string(&self) -> String {

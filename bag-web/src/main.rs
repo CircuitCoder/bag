@@ -1,3 +1,4 @@
+use bag_lib::action::Action;
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::prelude::*;
 
@@ -10,6 +11,14 @@ struct Context {
 }
 
 impl Context {
+    pub async fn handle(&self, action: &Action) {
+        match action {
+            Action::Navigate { to: p } => {
+                self.navigate(p);
+            }
+        }
+    }
+
     // TODO: relative navigation
     pub fn navigate(&self, p: &str) {
         web_sys::window()
