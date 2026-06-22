@@ -7,18 +7,19 @@ use bag_lib::ui::*;
 use crate::Context;
 
 #[component]
-pub fn Panel(backend: ReadSignal<String>, path: ReadSignal<String>) -> impl IntoView {
+pub fn Panel(backend: ReadSignal<String>, path: String) -> impl IntoView {
     let ctx: Option<Context> = use_context();
     if ctx.is_none() {
         web_sys::console::error_1(&"Panel component must be used within a Context provider".into());
     }
 
     let ctx: Context = use_context().expect("WTF");
+    let c = ctx.clone();
     let dispatch = Action::new(move |a: &bag_lib::action::Action| {
         let a = a.clone();
-        let ctx = ctx.clone();
+        let c = c.clone();
         async move {
-            ctx.handle(&a).await
+            c.handle(&a).await
         }
     });
 
@@ -103,14 +104,19 @@ pub fn Panel(backend: ReadSignal<String>, path: ReadSignal<String>) -> impl Into
         }
     };
 
-    let layout = LocalResource::new(move || async move {
-        let backend = backend.get();
-        let path = path.get();
-        let url = format!("{backend}/render/{path}");
-        let data: Result<Layout, _> = crate::util::fetch(&url).await;
-        web_sys::console::log_1(&format!("Fetched layout for {path}: {data:?}").into());
-        data
-    });
+    let layout = {
+        let path = path.clone();
+        LocalResource::new(move || {
+            let path = path.clone();
+            async move {
+                let backend = backend.get();
+                let url = format!("{backend}/render/{path}");
+                let data: Result<Layout, _> = crate::util::fetch(&url).await;
+                web_sys::console::log_1(&format!("Fetched layout for {path}: {data:?}").into());
+                data
+            }
+        })
+    };
 
     let inner = move || match layout.get() {
         None => view! { <div>"Loading..."</div> }.into_any(),
@@ -126,13 +132,34 @@ pub fn Panel(backend: ReadSignal<String>, path: ReadSignal<String>) -> impl Into
                 .iter()
                 .map(|comp| render(comp))
                 .collect::<Vec<_>>();
-            let no_metadata = metadata.is_empty();
+            let no_metadata = metadata.is_empty() && layout.left.is_none() && layout.right.is_none();
             view! {
                 <main>
                     <div class="layout-main">
                         {main}
                     </div>
                     <div class="layout-metadata" class:layout-metadata-hidden={no_metadata}>
+                        <div class="layout-nav" class:layout-nav-hidden={layout.left.is_none() && layout.right.is_none()}>
+                            {layout.left.as_ref().map(|p| {
+                                let p = p.clone();
+                                let ctx = ctx.clone();
+                                view !{
+                                    <button
+                                        class="layout-nav-prev"
+                                        on:click={move |_| ctx.navigate(&p)}>prev</button>
+                                }
+                            })}
+                            <div class="layout-nav-spanner"></div>
+                            {layout.right.as_ref().map(|p| {
+                                let p = p.clone();
+                                let ctx = ctx.clone();
+                                view !{
+                                    <button
+                                        class="layout-nav-next"
+                                        on:click={move |_| ctx.navigate(&p)}>next</button>
+                                }
+                            })}
+                        </div>
                         {metadata}
                     </div>
                 </main>

@@ -69,7 +69,13 @@ fn App() -> impl IntoView {
     }
 
     view! {
-        <panel::Panel backend=backend path=path />
+        <For
+            each=move || [path.get()]
+            key=|path| path.clone()
+            let (path)
+        >
+            <panel::Panel backend=backend path=path />
+        </For>
     }
 }
 

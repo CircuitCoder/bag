@@ -74,7 +74,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
             r#"
             SELECT path, is_directory, id FROM files WHERE parent = ?
             ORDER BY is_directory DESC, mtime DESC
-            LIMIT ? OFFSET ?
+            LIMIT ? + 1 OFFSET ?
         "#,
             file.id,
             limit,
@@ -82,6 +82,10 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         )
         .fetch_all(db.as_ref())
         .await?;
+
+        let is_start = offset == 0;
+        let is_end = children.len() <= limit as usize;
+        let children = &children[..(limit as usize).max(children.len())];
 
         let images = children
             .into_iter()
@@ -109,8 +113,20 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
             top: vec![],
             main: vec![Component::Gallery(Gallery { images })],
             metadata,
-            left: None,
-            right: None,
+            left: (!is_start).then(|| {
+                let offset_str;
+                let offset = if offset > limit {
+                    offset_str = (offset - limit).to_string();
+                    Some(offset_str.as_str())
+                } else { None };
+                path.with_arg("offset", offset)
+                    .to_string()
+            }),
+            right: (!is_end).then(|| {
+                let offset_str = (offset + limit).to_string();
+                path.with_arg("offset", Some(&offset_str))
+                    .to_string()
+            }),
         }
     } else {
         Layout {

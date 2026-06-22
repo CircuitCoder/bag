@@ -55,13 +55,25 @@ impl<'s> TryFrom<&'s str> for Segment<'s> {
     }
 }
 
-impl Segment<'_> {
+impl<'s> Segment<'s> {
     pub fn name(&self) -> &str {
         self.0.as_ref()
     }
 
     pub fn arg(&self, key: &str) -> Option<&str> {
         self.1.get(key).map(|v| v.as_ref())
+    }
+
+    pub fn with_arg<'r>(&'r self, key: &'r str, value: Option<&'r str>) -> Segment<'r>
+        where 's: 'r
+    {
+        let mut new_args = self.1.clone();
+        if let Some(value) = value {
+            new_args.insert(Cow::Borrowed(key), Cow::Borrowed(value));
+        } else {
+            new_args.remove(key);
+        }
+        Segment(self.0.clone(), new_args)
     }
 }
 
@@ -118,6 +130,19 @@ impl<'s> Path<'s> {
 
         let next_segments = &self.0[1..];
         Some(Path(Cow::Borrowed(next_segments)))
+    }
+
+    pub fn with_arg<'r>(&'r self, key: &'r str, value: Option<&'r str>) -> Path<'r>
+        where 's: 'r
+    {
+        if self.0.is_empty() {
+            return Path(Cow::Borrowed(&[]));
+        }
+
+        let mut modified = Vec::from(self.0.as_ref());
+        let modified_last = self.0[self.0.len() - 1].with_arg(key, value);
+        modified[self.0.len() - 1] = modified_last;
+        Path(Cow::Owned(modified))
     }
 
     pub fn to_bare_string(&self) -> String {
