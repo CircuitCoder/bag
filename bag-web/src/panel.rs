@@ -28,29 +28,13 @@ fn render_component(backend: &str, ctx: &Context, comp: &bag_lib::ui::Component)
         bag_lib::ui::Component::Gallery(Gallery { images }) => {
             let items: Vec<_> = images.into_iter().map(|img| {
                 let thumbnail = img.thumbnail.as_ref().and_then(|t| {
-                    let mime = mime_guess::from_path(t).first_or_octet_stream();
-                    let mime_type = mime.type_().as_str();
-                    if mime_type == "image" {
-                        // It's an image, we can render it
-                        Some(view! {
-                            <img
-                                class="rendered-gallery-thumbnail-img"
-                                loading="lazy"
-                                src={format!("{backend}/raw/{t}")} />
-                        }.into_any())
-                    } else if mime_type == "video" {
-                        Some(view! {
-                            <video
-                              class="rendered-gallery-thumbnail-video"
-                              src={format!("{backend}/raw/{t}#t=0.001")}
-                              preload="metadata"
-                              muted
-                              playsinline>
-                            </video>
-                        }.attr("loading", "lazy").into_any())
-                    } else {
-                        None
-                    }
+                    // It's an image, we can render it
+                    Some(view! {
+                        <img
+                            class="rendered-gallery-thumbnail"
+                            loading="lazy"
+                            src={format!("{backend}/raw/{t}")} />
+                    }.into_any())
                 });
 
                 let thumbnail = thumbnail.unwrap_or_else(|| {

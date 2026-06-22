@@ -5,9 +5,9 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, Response, Uri},
-    response::IntoResponse,
+    response::IntoResponse, routing::get,
 };
-use bag_fs::{etag::Etag, fs::FsHandler};
+use bag_fs::{etag::Etag, fs::FsHandler, thumb::{extract_thumbnail_img, extract_thumbnail_video}};
 use bag_lib::{
     action::Action,
     path::{Path, SegmentParseError},
@@ -52,7 +52,7 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
 
         let children = sqlx::query!(
             r#"
-            SELECT path, is_directory FROM files WHERE parent = ?
+            SELECT path, is_directory, id FROM files WHERE parent = ?
             ORDER BY is_directory DESC, mtime DESC
             LIMIT ? OFFSET ?
         "#,
@@ -74,7 +74,7 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
                 thumbnail: if row.is_directory {
                     None
                 } else {
-                    Some(row.path.clone())
+                    Some(format!("thumbnail/{}", row.id))
                 },
                 name: row
                     .path
@@ -102,7 +102,7 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
             top: vec![],
             main: vec![
                 Component::Image(Image {
-                    resource: file.path.clone(),
+                    resource: format!("file/{}", file.path.clone()),
                 }),
                 Component::Text(Text { content: name }),
             ],
@@ -118,8 +118,8 @@ pub async fn render(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layo
 }
 
 pub fn build(db: Database, root: PathBuf) -> Router {
-    let fs = FsHandler::new(root);
-    let raw_handler = Router::new().fallback(
+    let fs = FsHandler::new(root.clone());
+    let file_handler = Router::new().fallback(
         async move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
             let path = uri.path();
             let path = path.trim_start_matches('/');
@@ -156,6 +156,76 @@ pub fn build(db: Database, root: PathBuf) -> Router {
             fs.handle(path, &headers).await.into_response()
         },
     );
+    let thumbnail_handler = {
+        let db = db.clone();
+        let root = root.clone();
+        async move |axum::extract::Path(id): axum::extract::Path<i64>| -> axum::response::Response {
+            let resp: anyhow::Result<axum::response::Response> = async {
+                let existing = sqlx::query!("SELECT thumbnail, mime FROM thumbnails WHERE file_id = ?", id)
+                    .fetch_optional(db.as_ref())
+                    .await?;
+                let (tb, mime) = if let Some(existing) = existing {
+                    (existing.thumbnail, existing.mime)
+                } else {
+                    let file = sqlx::query!("SELECT path, is_directory FROM files WHERE id = ?", id)
+                        .fetch_optional(db.as_ref())
+                        .await?;
+                    let Some(file) = file else {
+                        return Ok((axum::http::StatusCode::NOT_FOUND, "Not Found".to_string()).into_response());
+                    };
+                    if file.is_directory {
+                        return Ok((axum::http::StatusCode::BAD_REQUEST, "Directories does not have thumbnails".to_string()).into_response());
+                    }
+                    let is_video = mime_guess::from_path(&file.path)
+                        .first_or_octet_stream()
+                        .type_()
+                        .as_str() == "video";
+
+                    let path = root.join(&file.path);
+
+                    let tb = if is_video {
+                        extract_thumbnail_video(path, 150).await
+                    } else {
+                        extract_thumbnail_img(path, 150).await
+                    };
+
+                    let tb = match tb {
+                        Ok(tb) => tb,
+                        Err(e) => {
+                            tracing::error!("Failed to extract thumbnail for file {}: {}", file.path, e);
+                            // TODO: cache this also
+                            return Ok((axum::http::StatusCode::NOT_FOUND, "Failed to extract thumbnail".to_string()).into_response());
+                        }
+                    };
+
+                    // Tries to update thumbnail, squash error
+                    if let Err(e) = sqlx::query!(
+                        "INSERT INTO thumbnails (file_id, thumbnail, mime) VALUES (?, ?, 'image/webp') ON CONFLICT(file_id) DO UPDATE SET thumbnail = excluded.thumbnail, mime = excluded.mime",
+                        id,
+                        tb,
+                    ).execute(db.as_ref()).await {
+                        tracing::error!("Failed to update thumbnail for file {}: {}", id, e);
+                    }
+
+                    (tb, "image/webp".to_owned())
+                };
+
+                return Ok(Response::builder()
+                    .header("Content-Type", mime)
+                    .header("Cache-Control", "max-age=3600, stale-while-revalidate=86400")
+                    .body(tb.into())
+                    .unwrap());
+            }.await;
+
+            match resp {
+                Ok(resp) => resp,
+                Err(e) => {
+                    tracing::error!("Failed to handle thumbnail request for file {}: {}", id, e);
+                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".to_string()).into_response()
+                }
+            }
+        }
+    };
     let render_handler = Router::new()
         .fallback(async move |state: State<AppState>, uri: Uri| {
             // Trim prefixing & suffixing "/"
@@ -201,7 +271,8 @@ pub fn build(db: Database, root: PathBuf) -> Router {
         .allow_headers(Any);
 
     let app = Router::new()
-        .nest("/v1/raw/", raw_handler)
+        .route("/v1/raw/thumbnail/{id}", get(thumbnail_handler))
+        .nest("/v1/raw/file/", file_handler)
         .nest("/v1/render/", render_handler)
         .with_state(state)
         .layer(cors);

@@ -30,18 +30,22 @@ body {
   cursor: pointer;
 }
 
-.rendered-gallery-img,
-.rendered-gallery-thumbnail-img,
-.rendered-gallery-thumbnail-video,
+.rendered-gallery-img {
+  height: calc(2px + var(--item-height));
+  width: calc(2px + var(--item-width));
+  border: 1px solid rgba(from var(--foreground) r g b / 0.1);
+}
+
+.rendered-gallery-thumbnail,
 .rendered-gallery-thumbnail-placeholder {
   height: var(--item-height);
   width: var(--item-width);
 }
 
-.rendered-gallery-thumbnail-img,
-.rendered-gallery-thumbnail-video {
-  object-fit: cover;
+.rendered-gallery-thumbnail {
+  object-fit: contain;
   pointer-events: none;
+  background: #000;
 }
 
 .rendered-gallery-img {
