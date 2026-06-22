@@ -85,7 +85,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
 
         let is_start = offset == 0;
         let is_end = children.len() <= limit as usize;
-        let children = &children[..(limit as usize).max(children.len())];
+        let children = &children[..(limit as usize).min(children.len())];
 
         let images = children
             .into_iter()
