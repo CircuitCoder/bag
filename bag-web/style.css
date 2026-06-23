@@ -37,6 +37,11 @@ main {
   min-height: 100vh;
 }
 
+.panel-prev,
+.panel-next {
+  display: none;
+}
+
 /* Gallery */
 .rendered-gallery {
   --item-width: 150px;

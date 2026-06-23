@@ -26,8 +26,8 @@ pub struct Layout {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "untagged")]
-enum LayoutOrAction {
+#[serde(untagged)]
+pub enum LayoutOrAction {
     Layout(Layout),
     Action(Action),
 }

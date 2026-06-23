@@ -4,16 +4,17 @@ use leptos::prelude::*;
 
 use bag_lib::ui::*;
 
-use crate::Context;
+use crate::{Context, util::FetchError};
 
 #[component]
-pub fn Panel(backend: ReadSignal<String>, path: String) -> impl IntoView {
+pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) -> impl IntoView {
     let ctx: Option<Context> = use_context();
     if ctx.is_none() {
         web_sys::console::error_1(&"Panel component must be used within a Context provider".into());
     }
 
-    let ctx: Context = use_context().expect("WTF");
+    let ctx: Context = use_context().expect("Panel component must be used within a Context provider");
+    let backend = ctx.backend.clone();
     let c = ctx.clone();
     let dispatch = Action::new(move |a: &bag_lib::action::Action| {
         let a = a.clone();
@@ -42,11 +43,11 @@ pub fn Panel(backend: ReadSignal<String>, path: String) -> impl IntoView {
                 let mime_type = mime.type_().as_str();
                 if mime_type == "video" {
                     return view! {
-                        <video class="rendered-video" src={format!("{}/raw/{resource}", backend.get())} controls loop />
+                        <video class="rendered-video" src={format!("{}/raw/{resource}", backend)} controls loop />
                     }.into_any();
                 }
                 view! {
-                    <img class="rendered-img" src={format!("{}/raw/{resource}", backend.get())} />
+                    <img class="rendered-img" src={format!("{}/raw/{resource}", backend)} />
                 }
                 .into_any()
             }
@@ -58,7 +59,7 @@ pub fn Panel(backend: ReadSignal<String>, path: String) -> impl IntoView {
                             <img
                                 class="rendered-gallery-thumbnail"
                                 loading="lazy"
-                                src={format!("{}/raw/{t}", backend.get())} />
+                                src={format!("{}/raw/{t}", backend)} />
                         }.into_any())
                     });
 
@@ -104,24 +105,10 @@ pub fn Panel(backend: ReadSignal<String>, path: String) -> impl IntoView {
         }
     };
 
-    let layout = {
-        let path = path.clone();
-        LocalResource::new(move || {
-            let path = path.clone();
-            async move {
-                let backend = backend.get();
-                let url = format!("{backend}/render/{path}");
-                let data: Result<Layout, _> = crate::util::fetch(&url).await;
-                web_sys::console::log_1(&format!("Fetched layout for {path}: {data:?}").into());
-                data
-            }
-        })
-    };
-
-    let inner = move || match layout.get() {
+    let inner = move || match &*data.read() {
         None => view! { <div>"Loading..."</div> }.into_any(),
         Some(Err(err)) => view! { <div>"Error: " {err.to_string()}</div> }.into_any(),
-        Some(Ok(layout)) => {
+        Some(Ok(LayoutOrAction::Layout(layout))) => {
             let main = layout
                 .main
                 .iter()
@@ -165,6 +152,9 @@ pub fn Panel(backend: ReadSignal<String>, path: String) -> impl IntoView {
                 </main>
             }
             .into_any()
+        }
+        Some(Ok(LayoutOrAction::Action(_))) => {
+            view!{}.into_any()
         }
     };
 
