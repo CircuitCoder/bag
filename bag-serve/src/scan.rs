@@ -250,12 +250,17 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     .await?;
 
     // Phase 3: remove all stale entries that has scan_id < current scan.
-    sqlx::query!(
+    tracing::info!("Scanned {} entries", counter);
+    let deleted = sqlx::query!(
         "DELETE FROM files WHERE is_stale = TRUE AND scan_id = ?",
         scan_id,
     )
     .execute(db.as_ref())
-    .await?;
+    .await?
+    .rows_affected();
+    if deleted > 0 {
+        tracing::info!("Deleted {} stale entries", deleted);
+    }
 
     // 3. Finalize the scan metadata. file_num comes from the iteration counter
     //    rather than a COUNT(*) so that concurrent scans don't corrupt it.
