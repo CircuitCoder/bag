@@ -42,6 +42,19 @@ main {
   display: none;
 }
 
+@media (max-width: 800px) {
+  main {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+
+  .layout-metadata {
+    top: unset;
+    bottom: calc(- 100% + 60px); /* TODO: this doesn't work */
+    min-height: unset;
+  }
+}
+
 /* Gallery */
 .rendered-gallery {
   --item-width: 150px;
@@ -113,6 +126,7 @@ main {
 .rendered-video {
   width: 100%;
   height: auto;
+  max-height: 100vh;
 }
 
 /* Text */
