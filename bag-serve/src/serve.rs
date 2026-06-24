@@ -26,6 +26,7 @@ struct AppState {
 const DEFAULT_PAGE_SIZE: usize = 100;
 
 pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layout>> {
+    let serialized = path.to_string();
     let bare = path.next().map(|e| e.to_bare_string()).unwrap_or("".to_owned());
     let _parent = path.parent();
     let file = sqlx::query!(r#"
@@ -55,7 +56,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         metadata.push(Component::Button(Button {
             text: "Go up".to_owned(),
             icon: Some("arrow_back".to_owned()),
-            action: Action::Navigate { to: parent.to_bare_string() },
+            action: Action::Navigate { to: parent.to_string() },
         }));
     }
 
@@ -112,7 +113,9 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
                     .rsplit_once("/")
                     .map(|e| e.1.to_owned())
                     .unwrap_or(row.path.clone()),
-                action: Some(Action::Navigate { to: format!("file/{}", row.path) }),
+                action: Some(Action::Navigate {
+                    to: format!("{}/{}", serialized, row.path.rsplit("/").next().unwrap())
+                }),
             })
             .collect();
 
@@ -138,6 +141,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
     } else {
         // Siblings
         let parent_id = file.parent;
+        let parent_path = path.parent().map(|e| e.to_string() + "/").unwrap_or_else(|| "".to_owned());
         let prev = sqlx::query!(
             r#"
                 SELECT path FROM files
@@ -174,8 +178,8 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
                 }),
             ],
             metadata,
-            left: prev.map(|p| format!("file/{}", p.path)),
-            right: next.map(|n| format!("file/{}", n.path))
+            left: prev.map(|p| parent_path.clone() + p.path.rsplit("/").next().unwrap()),
+            right: next.map(|n| parent_path + n.path.rsplit("/").next().unwrap())
         }
     };
 
