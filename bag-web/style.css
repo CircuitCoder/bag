@@ -45,12 +45,13 @@ main {
 @media (max-width: 800px) {
   main {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr auto;
+    grid-template-rows: 1fr min-content;
+    min-height: 100vh;
   }
 
   .layout-metadata {
     top: unset;
-    bottom: calc(- 100% + 60px); /* TODO: this doesn't work */
+    /* bottom: calc(- 100% + 60px); TODO: this doesn't work */
     min-height: unset;
   }
 }
@@ -127,6 +128,7 @@ main {
   width: 100%;
   height: auto;
   max-height: 100vh;
+  object-fit: contain;
 }
 
 /* Text */
@@ -148,17 +150,22 @@ main {
 .layout-nav button,
 .rendered-button {
   padding: 5px 15px;
+  height: 30px;
+  line-height: 20px;
   outline: none;
   border: none;
   background: rgba(from var(--foreground) r g b / 0.1);
   color: var(--foreground);
   cursor: pointer;
-  margin-top: 10px;
   border-radius: 4px;
 
   &:hover {
     background: rgba(from var(--foreground) r g b / 0.2);
   }
+}
+
+.rendered-button {
+  margin-top: 10px;
 }
 
 .rendered-text + .rendered-button {
