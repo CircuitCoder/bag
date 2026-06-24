@@ -28,7 +28,14 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layout>> {
     let bare = path.next().map(|e| e.to_bare_string()).unwrap_or("".to_owned());
     let _parent = path.parent();
-    let file = sqlx::query!("SELECT * FROM files WHERE path = ?", bare)
+    let file = sqlx::query!(r#"
+        SELECT
+          id,
+          mtime as "mtime: DateTime<Utc>",
+          is_directory,
+          parent
+        FROM files WHERE path = ?
+    "#, bare)
         .fetch_optional(db.as_ref())
         .await?;
 
@@ -44,7 +51,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
     ];
     if let Some(parent) = path.parent() {
         metadata.push(Component::Text(Text { content: "Path".to_owned(), variant: bag_lib::ui::TextVariant::Hint }));
-        metadata.push(Component::Text(Text { content: file.path.clone(), variant: bag_lib::ui::TextVariant::Body }));
+        metadata.push(Component::Text(Text { content: bare.clone(), variant: bag_lib::ui::TextVariant::Body }));
         metadata.push(Component::Button(Button {
             text: "Go up".to_owned(),
             icon: Some("arrow_back".to_owned()),
@@ -73,7 +80,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         let children = sqlx::query!(
             r#"
             SELECT path, is_directory, id FROM files WHERE parent = ?
-            ORDER BY is_directory DESC, mtime DESC
+            ORDER BY is_directory DESC, mtime DESC, path DESC
             LIMIT ? + 1 OFFSET ?
         "#,
             file.id,
@@ -129,20 +136,48 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
             }),
         }
     } else {
+        // Siblings
+        let parent_id = file.parent;
+        let prev = sqlx::query!(
+            r#"
+                SELECT path FROM files
+                WHERE parent = ?
+                    AND id != ?
+                    AND is_directory = FALSE
+                    AND mtime >= ?
+                ORDER BY mtime ASC, path ASC
+                LIMIT 1
+            "#,
+            parent_id,
+            file.id,
+            file.mtime,
+        ).fetch_optional(db.as_ref()).await?;
+        let next = sqlx::query!(
+            r#"
+                SELECT path FROM files
+                WHERE parent = ?
+                    AND id != ?
+                    AND is_directory = FALSE
+                    AND mtime <= ?
+                ORDER BY mtime DESC, path DESC
+                LIMIT 1
+            "#,
+            parent_id,
+            file.id,
+            file.mtime,
+        ).fetch_optional(db.as_ref()).await?;
         Layout {
             top: vec![],
             main: vec![
                 Component::Image(Image {
-                    resource: format!("file/{}", file.path),
+                    resource: format!("file/{}", bare),
                 }),
             ],
             metadata,
-            left: None,
-            right: None,
+            left: prev.map(|p| format!("file/{}", p.path)),
+            right: next.map(|n| format!("file/{}", n.path))
         }
     };
-
-    // TODO: fetch siblings
 
     Ok(Some(result))
 }
