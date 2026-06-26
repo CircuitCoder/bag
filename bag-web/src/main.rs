@@ -6,10 +6,10 @@ use futures::{
     channel::oneshot::{Receiver, Sender},
     select,
 };
-use leptos::{prelude::*, task::spawn_local};
-use web_sys::wasm_bindgen::prelude::*;
+use leptos::{html::Div, prelude::*, task::spawn_local};
+use web_sys::{MutationObserver, wasm_bindgen::prelude::*};
 
-use crate::util::FetchError;
+use crate::util::{FetchError, NodeListExt};
 
 mod panel;
 mod util;
@@ -499,8 +499,47 @@ fn App() -> impl IntoView {
     }));
     util::request_animation_frame(frame_handler.borrow().as_ref().unwrap());
 
+    let root = NodeRef::<Div>::new();
+    let mut auto_stopped = false;
+    let mutation_handler: ScopedClosure<dyn FnMut(web_sys::js_sys::Array, MutationObserver)> = Closure::wrap(Box::new(move |mutations: web_sys::js_sys::Array, _observer: MutationObserver| {
+        web_sys::console::log_2(&format!("MutationObserver: {} mutations", mutations.length()).into(), &mutations);
+        let Some(root) = root.get() else { return };
+        let vids = root.query_selector_all(".panel:not(.panel-current) video.rendered-video").unwrap();
+        for vid in vids.into_iter() {
+            let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
+            if !vid.paused() && !vid.ended() {
+                auto_stopped = true;
+            }
+            vid.pause().unwrap();
+        }
+
+        // If we auto stopped a video, then auto play anyone that attached as current
+        if auto_stopped {
+            let vid = root.query_selector(".panel-current video.rendered-video").unwrap();
+            if let Some(vid) = vid {
+                let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
+                let _ = vid.play().unwrap();
+                auto_stopped = false;
+            }
+        }
+    }));
+    let mutation_observer = MutationObserver::new(mutation_handler.as_ref().unchecked_ref()).unwrap();
+    mutation_handler.forget();
+    Effect::new(move |_| {
+        if let Some(root) = root.get() {
+            let opt =  web_sys::MutationObserverInit::new();
+            opt.set_child_list(true);
+            mutation_observer.observe_with_options(
+                &root,
+                &opt,
+            ).unwrap();
+        }
+    });
+
     view! {
         <div class="swipe-root"
+            node_ref=root
+            style:--swipe-offset={move || format!("{}px", offset.get())}
             on:pointerdown=move |ev| {
                 if ev.pointer_type() != "touch" { return; }
                 touching.set(SwipeState::Starting { init_x: ev.client_x() });
@@ -593,7 +632,6 @@ fn App() -> impl IntoView {
                 touching.set(SwipeState::default());
                 offset.set(0.0);
             }
-            style:--swipe-offset={move || format!("{}px", offset.get())}
         >
             <For
                 each=move || ctx.targets.read().as_targets()

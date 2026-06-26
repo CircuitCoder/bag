@@ -60,3 +60,38 @@ pub fn request_animation_frame(f: &Closure<dyn FnMut()>) {
         .request_animation_frame(f.as_ref().unchecked_ref())
         .expect("should register `requestAnimationFrame` OK");
 }
+
+pub struct NodeListIter {
+    list: web_sys::NodeList,
+    len: u32,
+    cur: u32,
+}
+
+impl Iterator for NodeListIter {
+    type Item = web_sys::Node;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cur < self.len {
+            let node = self.list.item(self.cur);
+            self.cur += 1;
+            node
+        } else {
+            None
+        }
+    }
+}
+
+pub trait NodeListExt {
+    fn into_iter(self) -> NodeListIter;
+}
+
+impl NodeListExt for web_sys::NodeList {
+    fn into_iter(self) -> NodeListIter {
+        let len = self.length();
+        NodeListIter {
+            list: self,
+            len,
+            cur: 0,
+        }
+    }
+}
