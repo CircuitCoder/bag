@@ -503,7 +503,7 @@ fn App() -> impl IntoView {
     let mut auto_stopped = false;
     let mutation_handler: ScopedClosure<dyn FnMut(web_sys::js_sys::Array, MutationObserver)> = Closure::wrap(Box::new(move |mutations: web_sys::js_sys::Array, _observer: MutationObserver| {
         web_sys::console::log_2(&format!("MutationObserver: {} mutations", mutations.length()).into(), &mutations);
-        let Some(root) = root.get() else { return };
+        let Some(root) = root.get_untracked() else { return };
         let vids = root.query_selector_all(".panel:not(.panel-current) video.rendered-video").unwrap();
         for vid in vids.into_iter() {
             let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
