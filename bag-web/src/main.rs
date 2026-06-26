@@ -245,17 +245,30 @@ impl RenderTargetPersona {
 }
 
 impl RenderTargetSet {
-    pub fn as_targets(&self) -> Vec<(RenderTarget, RenderTargetPersona)> {
+    pub fn as_targets(&self) -> Vec<RenderTarget> {
         let mut targets = vec![];
         if let Some(ref prev) = self.prev {
-            targets.push((prev.weak(), RenderTargetPersona::Prev));
+            targets.push(prev.weak());
         }
-        targets.push((self.current.weak(), RenderTargetPersona::Current));
+        targets.push(self.current.weak());
         if let Some(ref next) = self.next {
-            targets.push((next.weak(), RenderTargetPersona::Next));
+            targets.push(next.weak());
         }
         targets
     }
+
+    pub fn get_persona(&self, path: &str) -> Option<RenderTargetPersona> {
+        if self.current.path == path {
+            Some(RenderTargetPersona::Current)
+        } else if let Some(ref prev) = self.prev && prev.path == path {
+            Some(RenderTargetPersona::Prev)
+        } else if let Some(ref next) = self.next && next.path == path {
+            Some(RenderTargetPersona::Next)
+        } else {
+            None
+        }
+    }
+
 }
 
 const TOUCH_THRESHOLD: i32 = 10; // px
@@ -559,14 +572,14 @@ fn App() -> impl IntoView {
                 touching.set(SwipeState::default());
                 offset.set(0.0);
             }
-            data-offset={offset}
+            style:--swipe-offset={move || format!("{}px", offset.get())}
         >
             <For
                 each=move || ctx.targets.read().as_targets()
-                key=|(target, persona)| (target.path.clone(), *persona)
-                let ((target, persona))
+                key=|target| target.path.clone()
+                let (target)
             >
-                <div class={format!("panel panel-{}", persona.as_str())}>
+                <div class={move || format!("panel panel-{}", ctx.targets.read().get_persona(&target.path).map(|p| p.as_str()).unwrap_or("unknown"))}>
                     <panel::Panel data={target.data.read_only()} />
                 </div>
             </For>
