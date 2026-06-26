@@ -26,12 +26,16 @@ pub async fn extract_thumbnail_img(img: PathBuf, max_dim: u32) -> Result<Vec<u8>
             .write_to(&mut cursor, ImageFormat::WebP)?;
 
         Ok(cursor.into_inner())
-    }).await?
+    })
+    .await?
 }
 
 /// Extracts a thumbnail from a video file and returns raw encoded bytes.
 /// Outputs WebP format
-pub async fn extract_thumbnail_video(video: PathBuf, max_dim: u32) -> Result<Vec<u8>, ThumbnailError> {
+pub async fn extract_thumbnail_video(
+    video: PathBuf,
+    max_dim: u32,
+) -> Result<Vec<u8>, ThumbnailError> {
     tokio::task::spawn_blocking(move || {
         // Initialize FFmpeg (safe to call multiple times, but required at least once)
         ffmpeg::init()?;
@@ -98,7 +102,8 @@ pub async fn extract_thumbnail_video(video: PathBuf, max_dim: u32) -> Result<Vec
                             )
                         })?;
                     let dynamic_img = DynamicImage::ImageRgb8(img_buffer);
-                    let resized = dynamic_img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3);
+                    let resized =
+                        dynamic_img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3);
 
                     // Encode into an in-memory byte vector
                     let mut cursor = Cursor::new(Vec::new());

@@ -1,8 +1,6 @@
 /* Iterate through the filesystem tree */
 
-use std::{
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use indicatif::ProgressStyle;

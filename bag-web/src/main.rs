@@ -1,7 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 
 use bag_lib::{action::Action, ui::LayoutOrAction};
-use futures::{channel::oneshot::{Receiver, Sender}, select, StreamExt};
+use futures::{
+    StreamExt,
+    channel::oneshot::{Receiver, Sender},
+    select,
+};
 use leptos::{prelude::*, task::spawn_local};
 use web_sys::wasm_bindgen::prelude::*;
 
@@ -43,7 +47,9 @@ impl Context {
     // TODO: relative navigation
     pub fn navigate(&self, p: String) {
         let targets = self.targets.read_untracked();
-        if p == targets.current.path { return; }
+        if p == targets.current.path {
+            return;
+        }
 
         web_sys::window()
             .unwrap()
@@ -59,9 +65,13 @@ impl Context {
             Reset,
         }
 
-        let op = if let Some(ref prev) = targets.prev && prev.path == p {
+        let op = if let Some(ref prev) = targets.prev
+            && prev.path == p
+        {
             Operation::RotR
-        } else if let Some(ref next) = targets.next && next.path == p {
+        } else if let Some(ref next) = targets.next
+            && next.path == p
+        {
             Operation::RotL
         } else {
             Operation::Reset
@@ -70,7 +80,9 @@ impl Context {
         drop(targets);
 
         web_sys::console::log_1(&format!("Navigating to {p} with operation {:?}", op).into());
-        let Some(mut targets) = self.targets.try_write() else { return };
+        let Some(mut targets) = self.targets.try_write() else {
+            return;
+        };
         web_sys::console::log_1(&format!("Navigating to {p} with operation {:?}", op).into());
 
         match op {
@@ -80,22 +92,16 @@ impl Context {
                 } else {
                     self.initiate(p)
                 };
-                let replaced = std::mem::replace(
-                    &mut targets.current,
-                    replacing
-                );
+                let replaced = std::mem::replace(&mut targets.current, replacing);
                 targets.next = Some(replaced);
             }
             Operation::RotL => {
-                let replacing =  if let Some(next) = targets.next.take() {
+                let replacing = if let Some(next) = targets.next.take() {
                     next
                 } else {
                     self.initiate(p)
                 };
-                let replaced = std::mem::replace(
-                    &mut targets.current,
-                    replacing
-                );
+                let replaced = std::mem::replace(&mut targets.current, replacing);
                 targets.prev = Some(replaced);
             }
             Operation::Reset => {
@@ -119,7 +125,9 @@ impl Context {
     }
 
     fn activate(&self, data: LayoutOrAction) {
-        let Some(mut wr) = self.targets.try_write() else { return };
+        let Some(mut wr) = self.targets.try_write() else {
+            return;
+        };
         match data {
             LayoutOrAction::Layout(layout) => {
                 let prev_update = layout.left.as_ref() != wr.prev.as_ref().map(|t| &t.path);
@@ -196,11 +204,7 @@ impl RenderTarget {
             })
         }
 
-        Self {
-            path,
-            data,
-            retire,
-        }
+        Self { path, data, retire }
     }
 
     pub fn weak(&self) -> RenderTarget {
@@ -214,7 +218,10 @@ impl RenderTarget {
 
 impl Drop for RenderTarget {
     fn drop(&mut self) {
-        web_sys::console::log_2(&"Dropping render target for path: {}".to_owned().into(), &self.path.clone().into());
+        web_sys::console::log_2(
+            &"Dropping render target for path: {}".to_owned().into(),
+            &self.path.clone().into(),
+        );
         if let Some(retire) = self.retire.take() {
             retire.send(()).unwrap();
         }
@@ -260,15 +267,18 @@ impl RenderTargetSet {
     pub fn get_persona(&self, path: &str) -> Option<RenderTargetPersona> {
         if self.current.path == path {
             Some(RenderTargetPersona::Current)
-        } else if let Some(ref prev) = self.prev && prev.path == path {
+        } else if let Some(ref prev) = self.prev
+            && prev.path == path
+        {
             Some(RenderTargetPersona::Prev)
-        } else if let Some(ref next) = self.next && next.path == path {
+        } else if let Some(ref next) = self.next
+            && next.path == path
+        {
             Some(RenderTargetPersona::Next)
         } else {
             None
         }
     }
-
 }
 
 const TOUCH_THRESHOLD: i32 = 10; // px
@@ -315,7 +325,13 @@ enum SwipeDecision {
  * It's in the same unit as offset and velocity
  */
 fn swipe_decide(offset: f64, velocity: f64, threshold: f64) -> SwipeDecision {
-    web_sys::console::log_1(&format!("Swipe decision: offset = {}, velocity = {}, threshold = {}", offset, velocity, threshold).into());
+    web_sys::console::log_1(
+        &format!(
+            "Swipe decision: offset = {}, velocity = {}, threshold = {}",
+            offset, velocity, threshold
+        )
+        .into(),
+    );
     // The release animation is a *critically damped* spring returning to rest
     // (offset = 0). With critical damping (DAMPING^2 == 4 * STIFFNESS, asserted
     // above) and natural frequency w = sqrt(STIFFNESS), the trajectory has the
@@ -414,7 +430,7 @@ fn App() -> impl IntoView {
             init_x: i32,
             last_x: i32,
             last_time: f64,
-        }
+        },
     }
 
     impl Default for SwipeState {
@@ -438,7 +454,12 @@ fn App() -> impl IntoView {
     *frame_handler.borrow_mut() = Some(Closure::new(move || {
         util::request_animation_frame(frame_handler_clone.borrow().as_ref().unwrap());
 
-        let SwipeState::Released { release_time, release_velocity, release_offset } = touching.get_untracked() else {
+        let SwipeState::Released {
+            release_time,
+            release_velocity,
+            release_offset,
+        } = touching.get_untracked()
+        else {
             // Still touching, don't update offset
             return;
         };

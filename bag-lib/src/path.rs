@@ -65,7 +65,8 @@ impl<'s> Segment<'s> {
     }
 
     pub fn with_arg<'r>(&'r self, key: &'r str, value: Option<&'r str>) -> Segment<'r>
-        where 's: 'r
+    where
+        's: 'r,
     {
         let mut new_args = self.1.clone();
         if let Some(value) = value {
@@ -133,7 +134,8 @@ impl<'s> Path<'s> {
     }
 
     pub fn with_arg<'r>(&'r self, key: &'r str, value: Option<&'r str>) -> Path<'r>
-        where 's: 'r
+    where
+        's: 'r,
     {
         if self.0.is_empty() {
             return Path(Cow::Borrowed(&[]));

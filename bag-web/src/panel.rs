@@ -13,15 +13,14 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         web_sys::console::error_1(&"Panel component must be used within a Context provider".into());
     }
 
-    let ctx: Context = use_context().expect("Panel component must be used within a Context provider");
+    let ctx: Context =
+        use_context().expect("Panel component must be used within a Context provider");
     let backend = ctx.backend.clone();
     let c = ctx.clone();
     let dispatch = Action::new(move |a: &bag_lib::action::Action| {
         let a = a.clone();
         let c = c.clone();
-        async move {
-            c.handle(&a).await
-        }
+        async move { c.handle(&a).await }
     });
 
     let render = move |comp: &bag_lib::ui::Component| {
@@ -36,7 +35,8 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                     <div class={format!("rendered-text rendered-text-{variant}")}>
                         {content.clone()}
                     </div>
-                }.into_any()
+                }
+                .into_any()
             }
             bag_lib::ui::Component::Image(Image { resource }) => {
                 let mime = mime_guess::from_path(&resource).first_or_octet_stream();
@@ -100,8 +100,9 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 let action = action.clone();
                 view! { <button class="rendered-button" on:click={move |_| {
                     dispatch.dispatch(action.clone());
-                }}>{text}</button> }.into_any()
-            },
+                }}>{text}</button> }
+                .into_any()
+            }
         }
     };
 
@@ -119,7 +120,8 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 .iter()
                 .map(|comp| render(comp))
                 .collect::<Vec<_>>();
-            let no_metadata = metadata.is_empty() && layout.left.is_none() && layout.right.is_none();
+            let no_metadata =
+                metadata.is_empty() && layout.left.is_none() && layout.right.is_none();
             view! {
                 <main>
                     <div class="layout-main">
@@ -153,9 +155,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             }
             .into_any()
         }
-        Some(Ok(LayoutOrAction::Action(_))) => {
-            view!{}.into_any()
-        }
+        Some(Ok(LayoutOrAction::Action(_))) => view! {}.into_any(),
     };
 
     view! {

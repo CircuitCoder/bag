@@ -5,9 +5,14 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, Response, Uri},
-    response::IntoResponse, routing::get,
+    response::IntoResponse,
+    routing::get,
 };
-use bag_fs::{etag::Etag, fs::FsHandler, thumb::{extract_thumbnail_img, extract_thumbnail_video}};
+use bag_fs::{
+    etag::Etag,
+    fs::FsHandler,
+    thumb::{extract_thumbnail_img, extract_thumbnail_video},
+};
 use bag_lib::{
     action::Action,
     path::{Path, SegmentParseError},
@@ -27,18 +32,24 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 
 pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layout>> {
     let serialized = path.to_string();
-    let bare = path.next().map(|e| e.to_bare_string()).unwrap_or("".to_owned());
+    let bare = path
+        .next()
+        .map(|e| e.to_bare_string())
+        .unwrap_or("".to_owned());
     let _parent = path.parent();
-    let file = sqlx::query!(r#"
+    let file = sqlx::query!(
+        r#"
         SELECT
           id,
           mtime as "mtime: DateTime<Utc>",
           is_directory,
           parent
         FROM files WHERE path = ?
-    "#, bare)
-        .fetch_optional(db.as_ref())
-        .await?;
+    "#,
+        bare
+    )
+    .fetch_optional(db.as_ref())
+    .await?;
 
     let Some(file) = file else { return Ok(None) };
     let name = if path.segments().len() == 1 {
@@ -47,16 +58,25 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         path.last().unwrap().name()
     };
 
-    let mut metadata = vec![
-        Component::Text(Text { content: name.to_owned(), variant: bag_lib::ui::TextVariant::Title }),
-    ];
+    let mut metadata = vec![Component::Text(Text {
+        content: name.to_owned(),
+        variant: bag_lib::ui::TextVariant::Title,
+    })];
     if let Some(parent) = path.parent() {
-        metadata.push(Component::Text(Text { content: "Path".to_owned(), variant: bag_lib::ui::TextVariant::Hint }));
-        metadata.push(Component::Text(Text { content: bare.clone(), variant: bag_lib::ui::TextVariant::Body }));
+        metadata.push(Component::Text(Text {
+            content: "Path".to_owned(),
+            variant: bag_lib::ui::TextVariant::Hint,
+        }));
+        metadata.push(Component::Text(Text {
+            content: bare.clone(),
+            variant: bag_lib::ui::TextVariant::Body,
+        }));
         metadata.push(Component::Button(Button {
             text: "Go up".to_owned(),
             icon: Some("arrow_back".to_owned()),
-            action: Action::Navigate { to: parent.to_string() },
+            action: Action::Navigate {
+                to: parent.to_string(),
+            },
         }));
     }
 
@@ -114,7 +134,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
                     .map(|e| e.1.to_owned())
                     .unwrap_or(row.path.clone()),
                 action: Some(Action::Navigate {
-                    to: format!("{}/{}", serialized, row.path.rsplit("/").next().unwrap())
+                    to: format!("{}/{}", serialized, row.path.rsplit("/").next().unwrap()),
                 }),
             })
             .collect();
@@ -128,20 +148,23 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
                 let offset = if offset > limit {
                     offset_str = (offset - limit).to_string();
                     Some(offset_str.as_str())
-                } else { None };
-                path.with_arg("offset", offset)
-                    .to_string()
+                } else {
+                    None
+                };
+                path.with_arg("offset", offset).to_string()
             }),
             right: (!is_end).then(|| {
                 let offset_str = (offset + limit).to_string();
-                path.with_arg("offset", Some(&offset_str))
-                    .to_string()
+                path.with_arg("offset", Some(&offset_str)).to_string()
             }),
         }
     } else {
         // Siblings
         let parent_id = file.parent;
-        let parent_path = path.parent().map(|e| e.to_string() + "/").unwrap_or_else(|| "".to_owned());
+        let parent_path = path
+            .parent()
+            .map(|e| e.to_string() + "/")
+            .unwrap_or_else(|| "".to_owned());
         let prev = sqlx::query!(
             r#"
                 SELECT path FROM files
@@ -155,7 +178,9 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
             parent_id,
             file.id,
             file.mtime,
-        ).fetch_optional(db.as_ref()).await?;
+        )
+        .fetch_optional(db.as_ref())
+        .await?;
         let next = sqlx::query!(
             r#"
                 SELECT path FROM files
@@ -169,17 +194,17 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
             parent_id,
             file.id,
             file.mtime,
-        ).fetch_optional(db.as_ref()).await?;
+        )
+        .fetch_optional(db.as_ref())
+        .await?;
         Layout {
             top: vec![],
-            main: vec![
-                Component::Image(Image {
-                    resource: format!("file/{}", bare),
-                }),
-            ],
+            main: vec![Component::Image(Image {
+                resource: format!("file/{}", bare),
+            })],
             metadata,
             left: prev.map(|p| parent_path.clone() + p.path.rsplit("/").next().unwrap()),
-            right: next.map(|n| parent_path + n.path.rsplit("/").next().unwrap())
+            right: next.map(|n| parent_path + n.path.rsplit("/").next().unwrap()),
         }
     };
 
@@ -290,7 +315,11 @@ pub fn build(db: Database, root: PathBuf) -> Router {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::error!("Failed to handle thumbnail request for file {}: {}", id, e);
-                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".to_string()).into_response()
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal Server Error".to_string(),
+                    )
+                        .into_response()
                 }
             }
         }
@@ -334,7 +363,8 @@ pub fn build(db: Database, root: PathBuf) -> Router {
             } else if parsed.first().is_none() {
                 Json(Action::Navigate {
                     to: "file".to_owned(),
-                }).into_response()
+                })
+                .into_response()
             } else {
                 (axum::http::StatusCode::NOT_FOUND, "Not found".to_string()).into_response()
             }
