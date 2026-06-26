@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use web_sys::{
-    Response,
-    js_sys::futures::JsFuture,
-    wasm_bindgen::{JsCast, JsValue},
+    Response, js_sys::futures::JsFuture, wasm_bindgen::{JsCast, JsValue, prelude::Closure},
 };
 
 #[derive(Clone, Debug)]
@@ -52,4 +50,12 @@ where
 
     let data = serde_json::from_str(&resp_text)?;
     Ok(data)
+}
+
+
+pub fn request_animation_frame(f: &Closure<dyn FnMut()>) {
+    web_sys::window()
+        .unwrap()
+        .request_animation_frame(f.as_ref().unchecked_ref())
+        .expect("should register `requestAnimationFrame` OK");
 }

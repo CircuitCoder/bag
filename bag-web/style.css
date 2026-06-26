@@ -19,6 +19,17 @@ body {
 }
 
 /* Layout */
+.swipe-root {
+  --swipe-offset: attr(data-offset px);
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+body {
+  overflow: hidden;
+}
+
 main {
   display: grid;
   grid-template-columns: 1fr 300px;
@@ -37,9 +48,25 @@ main {
   min-height: 100vh;
 }
 
-.panel-prev,
+.panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+.panel-current {
+  transform: translateX(var(--swipe-offset));
+}
+.panel-prev {
+  transform: translateX(calc(-100vw + var(--swipe-offset)));
+}
 .panel-next {
-  display: none;
+  transform: translateX(calc(100vw + var(--swipe-offset)));
 }
 
 @media (max-width: 800px) {
