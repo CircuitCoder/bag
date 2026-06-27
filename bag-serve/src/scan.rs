@@ -60,11 +60,10 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         parent: Option<i64>,
         scan_id: i64,
         mark_stale: bool,
-    ) -> anyhow::Result<(i64, bool)> {
+    ) -> Result<(i64, bool), sqlx::Error> {
         let mut tx = db.as_ref().begin_with("BEGIN IMMEDIATE").await?;
         let path = &path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8: {}", path.display()))?;
+            .to_str().expect("Path is not valid UTF-8");
         let cur = sqlx::query!(
             r#"SELECT id AS "id!", scan_id, mtime AS "mtime: DateTime<Utc>" FROM files WHERE path = ?"#,
             path
@@ -83,6 +82,9 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                 parent,
                 is_dir, // TODO: archive
             ).execute(&mut *tx).await?.last_insert_rowid();
+            // Parent may be deleted by a newer scan right now
+            // Note that the ID field is INTEGER PRIMARY KEY AUTOINCREMENT, so it's never going to be reused
+            // This will be handled by the walk function
             tx.commit().await?;
             return Ok((inserted, true));
         };
@@ -144,47 +146,32 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         Ok((cur.id, true))
     }
 
-    let root_metadata = root.as_ref().metadata().map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to get metadata for root directory {}: {}",
-            root.as_ref().display(),
-            e
-        )
-    })?;
-    let (mut parent, _) = update_file(
-        &db,
-        Path::new(""),
-        &root_metadata,
-        None,
-        scan_id,
-        base.as_ref().is_empty(),
-    )
-    .await?;
-
     // Phase 1: iterate through all parent directories in base, ensure that they are created, get their IDs.
     let mut cur = PathBuf::new();
-    for seg in base.as_ref().components() {
-        cur.push(seg.as_os_str());
-        let joined = root.as_ref().join(&cur);
-        let metadata = joined.metadata().map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to get metadata for parent directory {} in base: {}",
-                cur.display(),
-                e
-            )
-        })?;
-        // TODO: allow scan base to be inside archive files
-        if !metadata.is_dir() {
-            return Err(anyhow::anyhow!(
-                "Base path {} is not a directory",
-                joined.display()
-            ));
-        }
+    let mut parent = None;
+    if !base.as_ref().is_empty() {
+        for seg in base.as_ref().components() {
+            let joined = root.as_ref().join(&cur);
+            let metadata = joined.metadata().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to get metadata for parent directory {} in base: {}",
+                    cur.display(),
+                    e
+                )
+            })?;
+            // TODO: allow scan base to be inside archive files
+            let is_dir = metadata.is_dir();
+            if !is_dir {
+                return Err(anyhow::anyhow!(
+                    "Base path {} is not a directory",
+                    joined.display()
+                ));
+            }
 
-        // TODO: to_string_lossy here is OK?
-        let last = cur == base.as_ref();
-        let (id, _) = update_file(&db, &cur, &metadata, Some(parent), scan_id, last).await?;
-        parent = id;
+            let (id, _) = update_file(&db, &cur, &metadata, parent, scan_id, false).await?;
+            parent = Some(id);
+            cur.push(seg.as_os_str());
+        }
     }
 
     // Phase 2: walk the subtree under base
@@ -211,7 +198,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             bar.inc(1);
             bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
 
-            let (cid, _) = update_file(
+            let (cid, _) = match update_file(
                 &db,
                 child_path.as_path(),
                 &metadata,
@@ -219,7 +206,16 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                 scan_id,
                 true,
             )
-            .await?;
+            .await {
+                Ok(r) => r,
+                Err(sqlx::Error::Database(e))
+                if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation => {
+                    // Some newer scan has delete the parent
+                    // just return
+                    return Ok(());
+                },
+                Err(e) => return Err(e.into()),
+            };
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
@@ -230,42 +226,94 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         Ok(())
     }
 
-    let mut counter = 1;
-    let bar = indicatif::ProgressBar::new_spinner()
-        .with_style(
-            ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
-        )
-        .with_message(format!("Scanning 1: {}", base.as_ref().display()));
-    walk(
-        db,
-        root.as_ref(),
-        scan_id,
-        base.as_ref(),
-        parent,
-        &mut counter,
-        &bar,
-    )
-    .await?;
+    // Now parent above us are all created
+    // parent = base's parent ID
+    // cur == base
 
-    // Phase 3: remove all stale entries that has scan_id < current scan.
-    tracing::info!("Scanned {} entries", counter);
-    let deleted = sqlx::query!(
-        "DELETE FROM files WHERE is_stale = TRUE AND scan_id = ?",
-        scan_id,
-    )
-    .execute(db.as_ref())
-    .await?
-    .rows_affected();
-    if deleted > 0 {
-        tracing::info!("Deleted {} stale entries", deleted);
-    }
+    // Read my own metadata
+    // Myself maybe missing
+    let base_metadata = root.as_ref().join(base.as_ref()).metadata();
+    let (scanned, deleted) = match base_metadata {
+        Ok(metadata) => {
+            let (id, _) = update_file(db, base.as_ref(), &metadata, parent, scan_id, true).await?;
+
+            let scanned = if metadata.is_dir() {
+                let mut counter = 1;
+                let bar = indicatif::ProgressBar::new_spinner()
+                    .with_style(
+                        ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
+                    )
+                    .with_message(format!("Scanning 1: {}", base.as_ref().display()));
+                walk(
+                    db,
+                    root.as_ref(),
+                    scan_id,
+                    base.as_ref(),
+                    id,
+                    &mut counter,
+                    &bar,
+                )
+                .await?;
+
+                counter
+            } else {
+                1
+            };
+
+            // Phase 3: remove all stale entries that has scan_id < current scan.
+            let deleted = sqlx::query!(
+                "DELETE FROM files WHERE is_stale = TRUE AND scan_id = ?",
+                scan_id,
+            )
+            .execute(db.as_ref())
+            .await?
+            .rows_affected();
+            (scanned, deleted)
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Base path does not exists, judge by whether
+            // base == "" or not
+            if base.as_ref().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "Root path {} does not exists: {}",
+                    root.as_ref().display(),
+                    e
+                ));
+            } else {
+                // We're fine with this, just cascade delete this entry
+                // Note that here we use scan_id < current scan id
+                // Because we've not even updated stale, and this deletion alone should be atomic
+                // And if this entry's scan_id is < current scan, its (transitive) children must haven't been seen
+                // by future scans
+                //
+                // This can cause a race, where a older scan is appending child to the subtree
+                // under this path.
+                //
+                // This is handled on the walking side
+
+                let base_str = base.as_ref().to_str().unwrap();
+                let deleted = sqlx::query!(
+                    "DELETE FROM files WHERE path = ? AND scan_id < ?",
+                    base_str,
+                    scan_id,
+                )
+                .execute(db.as_ref())
+                .await?
+                .rows_affected();
+                (0, deleted)
+            }
+        },
+        Err(e) => return Err(e.into())
+    };
+
+    tracing::info!("Scanned {} entries, deleted {} entries", scanned, deleted);
 
     // 3. Finalize the scan metadata. file_num comes from the iteration counter
     //    rather than a COUNT(*) so that concurrent scans don't corrupt it.
     let finished_at = Utc::now();
     sqlx::query!(
         "UPDATE scans SET file_num = ?, finished_at = ? WHERE id = ?",
-        counter,
+        scanned,
         finished_at,
         scan_id,
     )
