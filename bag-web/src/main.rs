@@ -384,7 +384,12 @@ fn App() -> impl IntoView {
     console_error_panic_hook::set_once();
     web_sys::console::log_1(&"App mounted".into());
     let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
-    let backend = local_storage.get_item("backend").unwrap().unwrap();
+    let backend = local_storage.get_item("backend").unwrap().unwrap_or_else(|| {
+        // Prompting user
+        let backend = web_sys::window().unwrap().prompt_with_message("Backend URL").unwrap().unwrap();
+        local_storage.set_item("backend", &backend).unwrap();
+        backend
+    });
     web_sys::console::log_1(&format!("Using backend: {}", backend).into());
     // FIXME: dynamic backend
 
