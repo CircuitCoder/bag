@@ -1,11 +1,24 @@
 /* Iterate through the filesystem tree */
 
-use std::path::{Path, PathBuf};
+use std::{borrow::Cow, collections::VecDeque, path::{Path, PathBuf}, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use indicatif::ProgressStyle;
+use inotify::{StreamExt, WatchDescriptor, Watches};
 
 use crate::db::Database;
+
+fn inotify_mask() -> inotify::WatchMask {
+    return inotify::WatchMask::CREATE
+        | inotify::WatchMask::DELETE
+        | inotify::WatchMask::CLOSE_WRITE
+        | inotify::WatchMask::MOVED_FROM
+        | inotify::WatchMask::MOVED_TO
+        | inotify::WatchMask::ATTRIB
+        // Erroring types
+        | inotify::WatchMask::DELETE_SELF
+        | inotify::WatchMask::MOVE_SELF;
+}
 
 pub fn sanitize_base_path<P: AsRef<Path>>(base: P) -> anyhow::Result<()> {
     if base
@@ -35,10 +48,113 @@ pub fn sanitize_base_path<P: AsRef<Path>>(base: P) -> anyhow::Result<()> {
  * root: absolute path
  * base: relative path, not ending with "/", contains no ".." or "."
  */
-pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
+ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
+     root: P1, // The root of the entire tree
+     base: P2, // Scanning from here
+     db: &Database,
+) -> anyhow::Result<()> {
+    rescan_inner(root, base, db, true, None).await
+}
+
+// Single thread / async flow access.
+struct WatchContext {
+    handle: Watches,
+    // paths is **relative** to the **root path**
+    // fwd is the **speculative** state, only used for removing watches
+    //
+    // fwd is a superset of kernel mapping at wall clock
+    fwd: std::collections::HashMap<PathBuf, WatchDescriptor>,
+    // rev is the **queued** state, or the nonspeculative state w.r.t. current inotify
+    // handler pointer. Adding a watch will append to rev
+    // rev is essentially a timeline for unprocessed IN_IGNORE and live mapping
+    rev: std::collections::HashMap<WatchDescriptor, VecDeque<PathBuf>>,
+
+    // Invariant:
+    // fwd is a bijection: at most one wd will be mapped
+    // fwd is a superset of what could've been watched at the wall clock
+    // if fwd(path) == wd, then rev(wd).last() == path (but not in reverse)
+}
+
+impl WatchContext {
+    // Returns false if already exists
+    pub fn add(&mut self, root: &Path, path: &Path, mask: inotify::WatchMask) -> anyhow::Result<bool> {
+        // We never add watches if there is a possibility of it being already added
+        // So every inotify_add_watch returns an actual newly allocated wd
+        //
+        // This will unfortunately cause us occasionally not tracking some directoy,
+        // in the case of fs / event handling race. Consider if a directory is deleted and immediately
+        // recreated. Since this is a new inode, the CREATE is triggered on the parent inode, and may
+        // race with IGNORE
+        //
+        // DELETE_SELF -> DELETE -> CREATE -> IGNORE
+        //
+        // Further more, if during DELETE_SELF's processing, we already read the created directory,
+        // then in the handling of DELETE_SELF, DELETE and CREATE, we won't be tracking anything new.
+        // Then the ignore will leave this path untracked.
+        //
+        // TODO: this assumption is false for system with hardlinks & symlinks
+        if self.fwd.contains_key(path) {
+            return Ok(false);
+        }
+        let wd = self.handle.add(&root.join(path), mask)?;
+
+        // Remove all path mapping to wd in rev,
+        // so that we'll not be errornously removed
+        let rev =  self.rev.entry(wd.clone()).or_default();
+        let last = rev.back();
+        if last.is_some() && self.fwd.get(last.unwrap()) == Some(&wd) && last.unwrap() != path {
+            self.fwd.remove(last.unwrap());
+        }
+
+        self.fwd.insert(path.to_path_buf(), wd.clone());
+        // We know we must be a new watch, push into rev
+        rev.push_back(path.to_path_buf());
+        Ok(true)
+    }
+
+    pub fn query_wd_concrete(&self, wd: WatchDescriptor) -> Option<&PathBuf> {
+        self.rev.get(&wd)?.front()
+    }
+
+    pub fn remove_start(&mut self, path: &Path) -> anyhow::Result<bool> {
+        // fwd is a superset
+        // if path is not in fwd, it must not be watched
+        let Some(wd) = self.fwd.remove(path) else {
+            return Ok(false);
+        };
+        if let Err(e) = self.handle.remove(wd) {
+            if e.kind() != std::io::ErrorKind::InvalidInput {
+                return Err(e.into());
+            }
+            // EINVAL means the watch descriptor is already removed (maybe automatically)
+            // which should be fine
+        }
+        // Don't modify rev yet
+        Ok(true)
+    }
+
+    pub fn remove_commit(&mut self, wd: WatchDescriptor) -> anyhow::Result<PathBuf> {
+        let ret = self.rev.get_mut(&wd).and_then(VecDeque::pop_front)
+            .ok_or_else(|| anyhow::anyhow!("Watch descriptor {} has no paths", wd.get_watch_descriptor_id()))?;
+
+        // self.rev must have wd now
+        if self.rev.get(&wd).unwrap().len() == 0 {
+            self.rev.remove(&wd);
+            // What we've just removed is the last for wd, so try to remove fwd mapping
+            if self.fwd.get(&ret) == Some(&wd) {
+                self.fwd.remove(&ret);
+            }
+        }
+        Ok(ret)
+    }
+}
+
+async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
     root: P1, // The root of the entire tree
     base: P2, // Scanning from here
     db: &Database,
+    ind: bool,
+    watches: Option<&tokio::sync::Mutex<WatchContext>>, // Watches to update, if any
 ) -> anyhow::Result<()> {
     sanitize_base_path(base.as_ref())?;
 
@@ -185,9 +301,17 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
         base: &Path,
         id: i64,
         counter: &mut i64,
-        bar: &indicatif::ProgressBar,
+        bar: Option<&indicatif::ProgressBar>,
+        watches: Option<&tokio::sync::Mutex<WatchContext>>
     ) -> anyhow::Result<()> {
+        // Before reading dir, add watches
+        // TODO: same as below: we may've been deleted in FS
+        if let Some(watches) = watches {
+            watches.lock().await.add(root, base, inotify_mask())?;
+        }
+
         let joined = root.join(&base);
+        // TODO: we may've been deleted in FS
         let mut entries = tokio::fs::read_dir(joined).await?;
         while let Some(entry) = entries.next_entry().await? {
             *counter += 1;
@@ -195,8 +319,10 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             let child_path = base.join(name);
             let metadata = entry.metadata().await?;
 
-            bar.inc(1);
-            bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
+            if let Some(bar) = bar {
+                bar.inc(1);
+                bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
+            }
 
             let (cid, _) = match update_file(
                 &db,
@@ -219,7 +345,7 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
-                Box::pin(walk(db, root, scan_id, &child_path, cid, counter, bar)).await?;
+                Box::pin(walk(db, root, scan_id, &child_path, cid, counter, bar, watches)).await?;
             }
         }
 
@@ -239,11 +365,15 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
 
             let scanned = if metadata.is_dir() {
                 let mut counter = 1;
-                let bar = indicatif::ProgressBar::new_spinner()
-                    .with_style(
-                        ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
+                let bar = if ind {
+                    Some(
+                        indicatif::ProgressBar::new_spinner()
+                            .with_style(
+                                ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
+                            )
+                            .with_message(format!("Scanning 1: {}", base.as_ref().display()))
                     )
-                    .with_message(format!("Scanning 1: {}", base.as_ref().display()));
+                } else { None };
                 walk(
                     db,
                     root.as_ref(),
@@ -251,7 +381,8 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                     base.as_ref(),
                     id,
                     &mut counter,
-                    &bar,
+                    bar.as_ref(),
+                    watches,
                 )
                 .await?;
 
@@ -300,6 +431,11 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
                 .execute(db.as_ref())
                 .await?
                 .rows_affected();
+
+                if let Some(w) = watches {
+                    w.lock().await.remove_start(base.as_ref())?;
+                }
+
                 (0, deleted)
             }
         },
@@ -321,4 +457,91 @@ pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
     .await?;
 
     Ok(())
+}
+
+/**
+ * Watch for updates in the filesystem tree
+ *
+ * It also triggers at lease one initial rescan of the base directory.
+ */
+pub async fn watch<P1: AsRef<Path>, P2: AsRef<Path>>(
+    root: P1, // The root of the entire tree
+    base: P2, // Scanning from here
+    db: &Database,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
+    sanitize_base_path(base.as_ref())?;
+    let watcher = inotify::Inotify::init()?;
+    let fullbase = root.as_ref().join(base.as_ref());
+    // Adding watches for base directory AOT.
+    // Since if there is absolutely no base directory, watch should immediate
+    // fail.
+    // TODO: This is a pretty fast action, we shouldn't need to spawn
+    // a blocking operation for this.
+    let mut ctx = WatchContext {
+        handle: watcher.watches(),
+        fwd: std::collections::HashMap::new(),
+        rev: std::collections::HashMap::new(),
+    };
+    ctx.add(root.as_ref(), base.as_ref(), inotify_mask())?;
+    let ctx = Arc::new(tokio::sync::Mutex::new(ctx));
+
+    let mut stream = watcher.into_event_stream(vec![0; 4096])?;
+
+    // Initial scan
+    let root_cloned = root.as_ref().to_path_buf();
+    let base_cloned = base.as_ref().to_path_buf();
+    let db_cloned = db.clone();
+    let ctx_cloned = ctx.clone();
+    tokio::spawn(async move {
+        tracing::info!("Initial scan...");
+        if let Err(e) = rescan_inner(&root_cloned, &base_cloned, &db_cloned, true, Some(&*ctx_cloned)).await {
+            tracing::error!("Initial scan failed: {}", e);
+        }
+        tracing::info!("Initial scan completed");
+    });
+
+    tracing::info!("Watching {}", fullbase.display());
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                tracing::info!("Stopping watch");
+                return Ok(());
+            }
+            ev = stream.next() => {
+                let Some(ev) = ev else {
+                    anyhow::bail!("Watch stream ended unexpectedly");
+                };
+
+                let ev = ev?;
+
+                if ev.mask.contains(inotify::EventMask::IGNORED) {
+                    // This is a retirement of a watch descriptor
+                    ctx.lock().await.remove_commit(ev.wd)?;
+                    continue;
+                } else if ev.mask.contains(inotify::EventMask::Q_OVERFLOW) {
+                    anyhow::bail!("Event queue overflowed")
+                }
+
+                let evbase = {
+                    ctx.lock().await.query_wd_concrete(ev.wd.clone()).ok_or_else(|| anyhow::anyhow!("Watch descriptor {} not found", ev.wd.get_watch_descriptor_id()))?.to_path_buf()
+                };
+                if (inotify::EventMask::DELETE_SELF | inotify::EventMask::MOVE_SELF).intersects(ev.mask) {
+                    if evbase == base.as_ref() {
+                        anyhow::bail!("Base directory {} was moved / deleted", fullbase.display());
+                    };
+                    // For other cases, watches will get removed inside rescan_inner
+                }
+
+                // The relative path (with root) of the updated file
+                let mut file: Cow<'_, Path> = evbase.into();
+                if let Some(name) = ev.name {
+                    file = file.join(name).into();
+                }
+                tracing::debug!("Event: {:?} on {}", ev.mask, file.display());
+                tracing::info!("Refresh {}", file.display());
+                rescan_inner(&root, &file, db, false, Some(&*ctx)).await?;
+            }
+        }
+    }
 }

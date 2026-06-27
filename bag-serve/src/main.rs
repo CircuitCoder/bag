@@ -35,6 +35,9 @@ enum Command {
     Rescan {
         #[clap(default_value = "")]
         base: OsString, // OsString opt-out non-empty check
+
+        #[clap(short, long)]
+        watch: bool,
     },
 }
 
@@ -76,8 +79,17 @@ async fn main() -> anyhow::Result<()> {
             let binder = tokio::net::TcpListener::bind((bind, port)).await?;
             axum::serve(binder, app).await?;
         }
-        Command::Rescan { base } => {
-            scan::rescan(&args.root, &base, &db).await?;
+        Command::Rescan { base, watch } => {
+            if watch {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                tokio::spawn(async move {
+                    tokio::signal::ctrl_c().await.unwrap();
+                    tx.send(()).unwrap();
+                });
+                scan::watch(&args.root, &base, &db, rx).await?;
+            } else {
+                scan::rescan(&args.root, &base, &db).await?;
+            }
         }
         _ => unreachable!(),
     }
