@@ -20,7 +20,7 @@ body {
 
 /* Layout */
 .swipe-root {
-  height: 100vh;
+  height: 100svh;
   width: 100vw;
   overflow: hidden;
 }
@@ -32,19 +32,40 @@ body {
 main {
   display: grid;
   grid-template-columns: 1fr 300px;
+  grid-template-areas: "main right";
 }
 
 .layout-main {
+  grid-area: main;
   align-self: center;
 }
 
-.layout-metadata {
+.layout-right {
+  grid-area: right;
   position: sticky;
-  top: 0;
-  background: rgba(0, 0, 0, 0.1);
+  bottom: 0;
+  align-self: end;
+  min-height: 100svh;
+
+  display: flex;
+  flex-direction: column;
+}
+
+.layout-nav {
+  background: rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px;
+  border-bottom: 1px solid rgba(from var(--foreground) r g b / 0.1);
+}
+
+.layout-metadata {
+  background: rgba(0, 0, 0, 0.2);
   padding: 20px;
   align-self: start;
-  min-height: 100vh;
+  flex: 1;
+  width: 100%;
 }
 
 .panel {
@@ -68,17 +89,34 @@ main {
   transform: translateX(calc(100vw + var(--swipe-offset)));
 }
 
+main > .layout-nav {
+  display: none;
+}
+
 @media (max-width: 800px) {
   main {
     grid-template-columns: 1fr;
-    grid-template-rows: 1fr min-content;
-    min-height: 100vh;
+    grid-template-rows: min-content 1fr min-content;
+    grid-template-areas: "nav" "main" "right";
+    min-height: 100svh;
   }
 
-  .layout-metadata {
-    top: unset;
-    /* bottom: calc(- 100% + 60px); TODO: this doesn't work */
+  .layout-right {
+    bottom: unset;
     min-height: unset;
+  }
+
+  main > .layout-nav {
+    grid-area: nav;
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    backdrop-filter: blur(2px);
+  }
+
+  .layout-right .layout-nav {
+    display: none;
   }
 }
 
@@ -153,8 +191,9 @@ main {
 .rendered-video {
   width: 100%;
   height: auto;
-  max-height: 100vh;
+  max-height: 100lvh;
   object-fit: contain;
+  display: block;
 }
 
 /* Text */
@@ -196,19 +235,6 @@ main {
 
 .rendered-text + .rendered-button {
   margin-top: 20px
-}
-
-.layout-nav {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: 20px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid rgba(from var(--foreground) r g b / 0.1);
-}
-
-.layout-nav.layout-nav-hidden {
-  display: none;
 }
 
 .layout-nav .layout-nav-spanner {

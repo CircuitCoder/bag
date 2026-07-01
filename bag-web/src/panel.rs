@@ -106,6 +106,30 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         }
     };
 
+    let render_nav = move |layout: &Layout| view! {
+        <nav class="layout-nav">
+            {layout.left.as_ref().map(|p| {
+                let p = p.clone();
+                let ctx = ctx.clone();
+                view !{
+                    <button
+                        class="layout-nav-prev"
+                        on:click={move |_| ctx.navigate(p.clone())}>prev</button>
+                }
+            })}
+            <div class="layout-nav-spanner"></div>
+            {layout.right.as_ref().map(|p| {
+                let p = p.clone();
+                let ctx = ctx.clone();
+                view !{
+                    <button
+                        class="layout-nav-next"
+                        on:click={move |_| ctx.navigate(p.clone())}>next</button>
+                }
+            })}
+        </nav>
+    };
+
     let inner = move || match &*data.read() {
         None => view! { <div>"Loading..."</div> }.into_any(),
         Some(Err(err)) => view! { <div>"Error: " {err.to_string()}</div> }.into_any(),
@@ -124,32 +148,15 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 metadata.is_empty() && layout.left.is_none() && layout.right.is_none();
             view! {
                 <main>
+                    {render_nav(layout)}
                     <div class="layout-main">
                         {main}
                     </div>
-                    <div class="layout-metadata" class:layout-metadata-hidden={no_metadata}>
-                        <div class="layout-nav" class:layout-nav-hidden={layout.left.is_none() && layout.right.is_none()}>
-                            {layout.left.as_ref().map(|p| {
-                                let p = p.clone();
-                                let ctx = ctx.clone();
-                                view !{
-                                    <button
-                                        class="layout-nav-prev"
-                                        on:click={move |_| ctx.navigate(p.clone())}>prev</button>
-                                }
-                            })}
-                            <div class="layout-nav-spanner"></div>
-                            {layout.right.as_ref().map(|p| {
-                                let p = p.clone();
-                                let ctx = ctx.clone();
-                                view !{
-                                    <button
-                                        class="layout-nav-next"
-                                        on:click={move |_| ctx.navigate(p.clone())}>next</button>
-                                }
-                            })}
+                    <div class="layout-right">
+                        {render_nav(layout)}
+                        <div class="layout-metadata" class:layout-metadata-hidden={no_metadata}>
+                            {metadata}
                         </div>
-                        {metadata}
                     </div>
                 </main>
             }
