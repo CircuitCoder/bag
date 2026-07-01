@@ -294,6 +294,17 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
     // This is done through a recursion
     // Assume the base is already updated last level. ID is the ID of the base, not its parent.
     // Calling this function currently implies that base is a directory
+
+    macro_rules! ignore_missing {
+        ($e:expr, $b:block) => {
+            match $e {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => $b,
+                Err(e) => return Err(e.into()),
+            }
+        };
+    }
+
     async fn walk(
         db: &Database,
         root: &Path,
@@ -312,12 +323,12 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
 
         let joined = root.join(&base);
         // TODO: we may've been deleted in FS
-        let mut entries = tokio::fs::read_dir(joined).await?;
+        let mut entries = ignore_missing!(tokio::fs::read_dir(joined).await, { return Ok(()) });
         while let Some(entry) = entries.next_entry().await? {
             *counter += 1;
             let name = entry.file_name().to_string_lossy().into_owned();
             let child_path = base.join(name);
-            let metadata = entry.metadata().await?;
+            let metadata = ignore_missing!(entry.metadata().await, { continue });
 
             if let Some(bar) = bar {
                 bar.inc(1);
