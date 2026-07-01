@@ -557,7 +557,17 @@ fn App() -> impl IntoView {
         </dialog>
         <div class="swipe-root"
             node_ref=root
-            style:--swipe-offset={move || format!("{}px", offset.get())}
+            style:--swipe-offset={move || {
+                let tgts = ctx.targets.read();
+                let mut offset = offset.get();
+                if tgts.prev.is_none() && offset > 0.0 {
+                    offset = 0.0;
+                }
+                if tgts.next.is_none() && offset < 0.0 {
+                    offset = 0.0;
+                }
+                format!("{}px", offset)
+            }}
             on:pointerdown=move |ev| {
                 if ev.pointer_type() != "touch" { return; }
                 touching.set(SwipeState::Starting { init_x: ev.client_x() });
