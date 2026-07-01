@@ -53,11 +53,24 @@ main {
 
 .layout-nav {
   background: rgba(0, 0, 0, 0.2);
-  display: flex;
+  display: grid;
+  grid-template-columns: 80px 80px 80px;
   align-items: center;
   justify-content: space-between;
   padding: 20px;
   border-bottom: 1px solid rgba(from var(--foreground) r g b / 0.1);
+}
+
+.layout-nav-prev {
+  grid-column: 1;
+}
+
+.layout-nav-cfg {
+  grid-column: 2;
+}
+
+.layout-nav-next {
+  grid-column: 3;
 }
 
 .layout-metadata {
@@ -108,7 +121,7 @@ main > .layout-nav {
 
   main > .layout-nav {
     grid-area: nav;
-    display: flex;
+    display: grid;
     position: sticky;
     top: 0;
     z-index: 1;
@@ -235,8 +248,4 @@ main > .layout-nav {
 
 .rendered-text + .rendered-button {
   margin-top: 20px
-}
-
-.layout-nav .layout-nav-spanner {
-  flex: 1;
 }

@@ -117,7 +117,16 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                         on:click={move |_| ctx.navigate(p.clone())}>prev</button>
                 }
             })}
-            <div class="layout-nav-spanner"></div>
+            {
+                let ctx = ctx.clone();
+                view! {
+                    <button class="layout-nav-cfg"
+                        on:click={move |_| ctx.open_cfg()}
+                    >
+                        Settings
+                    </button>
+                }
+            }
             {layout.right.as_ref().map(|p| {
                 let p = p.clone();
                 let ctx = ctx.clone();

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use bag_lib::{action::Action, ui::LayoutOrAction};
 use futures::{
@@ -18,6 +18,7 @@ mod util;
 struct Context {
     targets: RwSignal<RenderTargetSet>,
     backend: String,
+    cfg_dialog: Arc<NodeRef<leptos::html::Dialog>>,
 }
 
 impl Context {
@@ -31,6 +32,7 @@ impl Context {
                 prev: None,
             }),
             backend,
+            cfg_dialog: Arc::new(NodeRef::new()),
         };
         ret.subscribe(&ret.targets.read_untracked().current, retire_rx);
         ret
@@ -179,6 +181,12 @@ impl Context {
                 }
             }
         });
+    }
+
+    pub fn open_cfg(&self) {
+        if let Some(dialog) = self.cfg_dialog.get() {
+            dialog.show_modal().unwrap();
+        }
     }
 }
 
@@ -542,6 +550,11 @@ fn App() -> impl IntoView {
     });
 
     view! {
+        <dialog
+            node_ref=*ctx.cfg_dialog
+            closedby="any"
+        >
+        </dialog>
         <div class="swipe-root"
             node_ref=root
             style:--swipe-offset={move || format!("{}px", offset.get())}
