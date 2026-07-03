@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, string::FromUtf8Error};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Segment<'a>(Cow<'a, str>, HashMap<Cow<'a, str>, Cow<'a, str>>);
+pub struct Segment<'a>(pub Cow<'a, str>, pub HashMap<Cow<'a, str>, Cow<'a, str>>);
 
 impl<'a> Segment<'a> {
     pub const fn new(name: Cow<'a, str>, args: HashMap<Cow<'a, str>, Cow<'a, str>>) -> Self {
@@ -85,7 +85,7 @@ impl<'s> Segment<'s> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Path<'a>(Cow<'a, [Segment<'a>]>);
+pub struct Path<'a>(pub Cow<'a, [Segment<'a>]>);
 
 impl ToString for Path<'_> {
     fn to_string(&self) -> String {
