@@ -554,6 +554,17 @@ fn App() -> impl IntoView {
             node_ref=*ctx.cfg_dialog
             closedby="any"
         >
+            <button
+                on:click={move |_| {
+                    if web_sys::window().unwrap().confirm_with_message("Confirm? This will refresh the page.") != Ok(true) {
+                        return;
+                    }
+                    let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
+                    local_storage.remove_item("backend").unwrap();
+                    // Refresh
+                    web_sys::window().unwrap().location().reload().unwrap();
+                }}
+            >Reset Backend</button>
         </dialog>
         <div class="swipe-root"
             node_ref=root

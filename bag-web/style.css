@@ -225,7 +225,7 @@ main > .layout-nav {
   margin-top: 20px;
 }
 
-.layout-nav button,
+button,
 .rendered-button {
   padding: 5px 15px;
   height: 30px;
@@ -248,4 +248,18 @@ main > .layout-nav {
 
 .rendered-text + .rendered-button {
   margin-top: 20px
+}
+
+/* Dialog */
+dialog {
+  background: var(--background);
+  width: 100%;
+  max-width: min(500px, calc(100vw - 80px));
+  max-height: calc(100svh - 40px);
+  padding: 20px;
+  border: none;
+}
+
+dialog::backdrop {
+  backdrop-filter: blur(2px);
 }
