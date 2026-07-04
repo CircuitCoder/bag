@@ -102,6 +102,22 @@ main {
   transform: translateX(calc(100vw + var(--swipe-offset)));
 }
 
+.panel-error, .panel-loading {
+  height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.panel-loading {
+  opacity: 0.5;
+}
+
+.panel-error-settings {
+  margin-top: 20px;
+}
+
 main > .layout-nav {
   display: none;
 }

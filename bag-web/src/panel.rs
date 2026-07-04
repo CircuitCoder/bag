@@ -106,11 +106,12 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         }
     };
 
+    let nav_ctx = ctx.clone();
     let render_nav = move |layout: &Layout| view! {
         <nav class="layout-nav">
             {layout.left.as_ref().map(|p| {
                 let p = p.clone();
-                let ctx = ctx.clone();
+                let ctx = nav_ctx.clone();
                 view !{
                     <button
                         class="layout-nav-prev"
@@ -118,7 +119,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }
             })}
             {
-                let ctx = ctx.clone();
+                let ctx = nav_ctx.clone();
                 view! {
                     <button class="layout-nav-cfg"
                         on:click={move |_| ctx.open_cfg()}
@@ -129,7 +130,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             }
             {layout.right.as_ref().map(|p| {
                 let p = p.clone();
-                let ctx = ctx.clone();
+                let ctx = nav_ctx.clone();
                 view !{
                     <button
                         class="layout-nav-next"
@@ -140,8 +141,18 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
     };
 
     let inner = move || match &*data.read() {
-        None => view! { <div>"Loading..."</div> }.into_any(),
-        Some(Err(err)) => view! { <div>"Error: " {err.to_string()}</div> }.into_any(),
+        None => view! { <div class="panel-loading">"Loading..."</div> }.into_any(),
+        Some(Err(err)) => {
+            let ctx = ctx.clone();
+            view! {
+                <div class="panel-error">
+                    <h1 class="panel-error-title">Error</h1>
+                    <div class="panel-error-hint">{err.to_string()}</div>
+
+                    <button class="panel-error-settings" on:click={move |_| ctx.open_cfg()}>Settings</button>
+                </div>
+            }.into_any()
+        }
         Some(Ok(LayoutOrAction::Layout(layout))) => {
             let main = layout
                 .main
