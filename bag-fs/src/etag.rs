@@ -4,12 +4,13 @@ use std::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Etag {
+pub struct Etag<'s> {
     pub mtime: SystemTime,
     pub length: u64,
+    pub subpath: Option<&'s str>,
 }
 
-impl Etag {
+impl Etag<'_> {
     pub fn hash_u64(&self) -> u64 {
         let mut hasher = std::hash::DefaultHasher::new();
         self.hash(&mut hasher);
@@ -19,15 +20,16 @@ impl Etag {
     pub fn hash_string(&self) -> String {
         format!("{:x}", self.hash_u64())
     }
+}
 
-    pub fn check_header(&self, header: &str) -> bool {
-        if header == "*" {
-            return true;
-        }
-
-        header.split(",").any(|seg| {
-            let trimmed = seg.trim();
-            return trimmed == format!("\"{}\"", self.hash_string());
-        })
+pub fn check_header(computed: &str, header: &str) -> bool {
+    if header == "*" {
+        return true;
     }
+    let with_quotes = format!("\"{}\"", computed);
+
+    header.split(",").any(|seg| {
+        let trimmed = seg.trim();
+        return trimmed == with_quotes;
+    })
 }
