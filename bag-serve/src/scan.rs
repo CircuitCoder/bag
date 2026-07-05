@@ -1,6 +1,11 @@
 /* Iterate through the filesystem tree */
 
-use std::{borrow::Cow, collections::VecDeque, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use chrono::{DateTime, Utc};
 use indicatif::ProgressStyle;
@@ -48,10 +53,10 @@ pub fn sanitize_base_path<P: AsRef<Path>>(base: P) -> anyhow::Result<()> {
  * root: absolute path
  * base: relative path, not ending with "/", contains no ".." or "."
  */
- pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
-     root: P1, // The root of the entire tree
-     base: P2, // Scanning from here
-     db: &Database,
+pub async fn rescan<P1: AsRef<Path>, P2: AsRef<Path>>(
+    root: P1, // The root of the entire tree
+    base: P2, // Scanning from here
+    db: &Database,
 ) -> anyhow::Result<()> {
     rescan_inner(root, base, db, true, None).await
 }
@@ -68,7 +73,6 @@ struct WatchContext {
     // handler pointer. Adding a watch will append to rev
     // rev is essentially a timeline for unprocessed IN_IGNORE and live mapping
     rev: std::collections::HashMap<WatchDescriptor, VecDeque<PathBuf>>,
-
     // Invariant:
     // fwd is a bijection: at most one wd will be mapped
     // fwd is a superset of what could've been watched at the wall clock
@@ -77,7 +81,12 @@ struct WatchContext {
 
 impl WatchContext {
     // Returns false if already exists
-    pub fn add(&mut self, root: &Path, path: &Path, mask: inotify::WatchMask) -> anyhow::Result<bool> {
+    pub fn add(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        mask: inotify::WatchMask,
+    ) -> anyhow::Result<bool> {
         // We never add watches if there is a possibility of it being already added
         // So every inotify_add_watch returns an actual newly allocated wd
         //
@@ -100,7 +109,7 @@ impl WatchContext {
 
         // Remove all path mapping to wd in rev,
         // so that we'll not be errornously removed
-        let rev =  self.rev.entry(wd.clone()).or_default();
+        let rev = self.rev.entry(wd.clone()).or_default();
         let last = rev.back();
         if last.is_some() && self.fwd.get(last.unwrap()) == Some(&wd) && last.unwrap() != path {
             self.fwd.remove(last.unwrap());
@@ -134,8 +143,16 @@ impl WatchContext {
     }
 
     pub fn remove_commit(&mut self, wd: WatchDescriptor) -> anyhow::Result<PathBuf> {
-        let ret = self.rev.get_mut(&wd).and_then(VecDeque::pop_front)
-            .ok_or_else(|| anyhow::anyhow!("Watch descriptor {} has no paths", wd.get_watch_descriptor_id()))?;
+        let ret = self
+            .rev
+            .get_mut(&wd)
+            .and_then(VecDeque::pop_front)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Watch descriptor {} has no paths",
+                    wd.get_watch_descriptor_id()
+                )
+            })?;
 
         // self.rev must have wd now
         if self.rev.get(&wd).unwrap().len() == 0 {
@@ -178,8 +195,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
         mark_stale: bool,
     ) -> Result<(i64, bool), sqlx::Error> {
         let mut tx = db.as_ref().begin_with("BEGIN IMMEDIATE").await?;
-        let path = &path
-            .to_str().expect("Path is not valid UTF-8");
+        let path = &path.to_str().expect("Path is not valid UTF-8");
         let cur = sqlx::query!(
             r#"SELECT id AS "id!", scan_id, mtime AS "mtime: DateTime<Utc>" FROM files WHERE path = ?"#,
             path
@@ -313,7 +329,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
         id: i64,
         counter: &mut i64,
         bar: Option<&indicatif::ProgressBar>,
-        watches: Option<&tokio::sync::Mutex<WatchContext>>
+        watches: Option<&tokio::sync::Mutex<WatchContext>>,
     ) -> anyhow::Result<()> {
         // Before reading dir, add watches
         // TODO: same as below: we may've been deleted in FS
@@ -343,20 +359,32 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
                 scan_id,
                 true,
             )
-            .await {
+            .await
+            {
                 Ok(r) => r,
                 Err(sqlx::Error::Database(e))
-                if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation => {
+                    if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation =>
+                {
                     // Some newer scan has delete the parent
                     // just return
                     return Ok(());
-                },
+                }
                 Err(e) => return Err(e.into()),
             };
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
-                Box::pin(walk(db, root, scan_id, &child_path, cid, counter, bar, watches)).await?;
+                Box::pin(walk(
+                    db,
+                    root,
+                    scan_id,
+                    &child_path,
+                    cid,
+                    counter,
+                    bar,
+                    watches,
+                ))
+                .await?;
             }
         }
 
@@ -380,11 +408,16 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
                     Some(
                         indicatif::ProgressBar::new_spinner()
                             .with_style(
-                                ProgressStyle::with_template("{spinner} {elapsed_precise} [{per_sec}] {msg}").unwrap(),
+                                ProgressStyle::with_template(
+                                    "{spinner} {elapsed_precise} [{per_sec}] {msg}",
+                                )
+                                .unwrap(),
                             )
-                            .with_message(format!("Scanning 1: {}", base.as_ref().display()))
+                            .with_message(format!("Scanning 1: {}", base.as_ref().display())),
                     )
-                } else { None };
+                } else {
+                    None
+                };
                 walk(
                     db,
                     root.as_ref(),
@@ -411,7 +444,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
             .await?
             .rows_affected();
             (scanned, deleted)
-        },
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Base path does not exists, judge by whether
             // base == "" or not
@@ -449,8 +482,8 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
 
                 (0, deleted)
             }
-        },
-        Err(e) => return Err(e.into())
+        }
+        Err(e) => return Err(e.into()),
     };
 
     tracing::info!("Scanned {} entries, deleted {} entries", scanned, deleted);
@@ -506,7 +539,15 @@ pub async fn watch<P1: AsRef<Path>, P2: AsRef<Path>>(
     let ctx_cloned = ctx.clone();
     tokio::spawn(async move {
         tracing::info!("Initial scan...");
-        if let Err(e) = rescan_inner(&root_cloned, &base_cloned, &db_cloned, true, Some(&*ctx_cloned)).await {
+        if let Err(e) = rescan_inner(
+            &root_cloned,
+            &base_cloned,
+            &db_cloned,
+            true,
+            Some(&*ctx_cloned),
+        )
+        .await
+        {
             tracing::error!("Initial scan failed: {}", e);
         }
         tracing::info!("Initial scan completed");

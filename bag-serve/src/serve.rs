@@ -230,12 +230,14 @@ pub fn build(db: Database, root: PathBuf) -> Router {
                 .and_then(|e| e.to_str().ok())
             {
                 if let Ok(Some(metadata)) = metadata {
+                    // TODO: correctly set subpath
                     let mtime: std::time::SystemTime = metadata.mtime.into();
                     let ref_etag = Etag {
                         mtime,
                         length: metadata.length as u64,
+                        subpath: None,
                     };
-                    if ref_etag.check_header(etag) {
+                    if bag_fs::etag::check_header(&ref_etag.hash_string(), etag) {
                         return Response::builder()
                             .status(axum::http::StatusCode::NOT_MODIFIED)
                             .header("ETag", ref_etag.hash_string())

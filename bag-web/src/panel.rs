@@ -107,37 +107,39 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
     };
 
     let nav_ctx = ctx.clone();
-    let render_nav = move |layout: &Layout| view! {
-        <nav class="layout-nav">
-            {layout.left.as_ref().map(|p| {
-                let p = p.clone();
-                let ctx = nav_ctx.clone();
-                view !{
-                    <button
-                        class="layout-nav-prev"
-                        on:click={move |_| ctx.navigate(p.clone())}>prev</button>
+    let render_nav = move |layout: &Layout| {
+        view! {
+            <nav class="layout-nav">
+                {layout.left.as_ref().map(|p| {
+                    let p = p.clone();
+                    let ctx = nav_ctx.clone();
+                    view !{
+                        <button
+                            class="layout-nav-prev"
+                            on:click={move |_| ctx.navigate(p.clone())}>prev</button>
+                    }
+                })}
+                {
+                    let ctx = nav_ctx.clone();
+                    view! {
+                        <button class="layout-nav-cfg"
+                            on:click={move |_| ctx.open_cfg()}
+                        >
+                            Settings
+                        </button>
+                    }
                 }
-            })}
-            {
-                let ctx = nav_ctx.clone();
-                view! {
-                    <button class="layout-nav-cfg"
-                        on:click={move |_| ctx.open_cfg()}
-                    >
-                        Settings
-                    </button>
-                }
-            }
-            {layout.right.as_ref().map(|p| {
-                let p = p.clone();
-                let ctx = nav_ctx.clone();
-                view !{
-                    <button
-                        class="layout-nav-next"
-                        on:click={move |_| ctx.navigate(p.clone())}>next</button>
-                }
-            })}
-        </nav>
+                {layout.right.as_ref().map(|p| {
+                    let p = p.clone();
+                    let ctx = nav_ctx.clone();
+                    view !{
+                        <button
+                            class="layout-nav-next"
+                            on:click={move |_| ctx.navigate(p.clone())}>next</button>
+                    }
+                })}
+            </nav>
+        }
     };
 
     let inner = move || match &*data.read() {

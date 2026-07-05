@@ -392,12 +392,19 @@ fn App() -> impl IntoView {
     console_error_panic_hook::set_once();
     web_sys::console::log_1(&"App mounted".into());
     let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
-    let backend = local_storage.get_item("backend").unwrap().unwrap_or_else(|| {
-        // Prompting user
-        let backend = web_sys::window().unwrap().prompt_with_message("Backend URL").unwrap().unwrap();
-        local_storage.set_item("backend", &backend).unwrap();
-        backend
-    });
+    let backend = local_storage
+        .get_item("backend")
+        .unwrap()
+        .unwrap_or_else(|| {
+            // Prompting user
+            let backend = web_sys::window()
+                .unwrap()
+                .prompt_with_message("Backend URL")
+                .unwrap()
+                .unwrap();
+            local_storage.set_item("backend", &backend).unwrap();
+            backend
+        });
     web_sys::console::log_1(&format!("Using backend: {}", backend).into());
     // FIXME: dynamic backend
 
@@ -514,38 +521,48 @@ fn App() -> impl IntoView {
 
     let root = NodeRef::<Div>::new();
     let mut auto_stopped = false;
-    let mutation_handler: ScopedClosure<dyn FnMut(web_sys::js_sys::Array, MutationObserver)> = Closure::wrap(Box::new(move |mutations: web_sys::js_sys::Array, _observer: MutationObserver| {
-        web_sys::console::log_2(&format!("MutationObserver: {} mutations", mutations.length()).into(), &mutations);
-        let Some(root) = root.get_untracked() else { return };
-        let vids = root.query_selector_all(".panel:not(.panel-current) video.rendered-video").unwrap();
-        for vid in vids.into_iter() {
-            let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
-            if !vid.paused() && !vid.ended() {
-                auto_stopped = true;
-            }
-            vid.pause().unwrap();
-        }
+    let mutation_handler: ScopedClosure<dyn FnMut(web_sys::js_sys::Array, MutationObserver)> =
+        Closure::wrap(Box::new(
+            move |mutations: web_sys::js_sys::Array, _observer: MutationObserver| {
+                web_sys::console::log_2(
+                    &format!("MutationObserver: {} mutations", mutations.length()).into(),
+                    &mutations,
+                );
+                let Some(root) = root.get_untracked() else {
+                    return;
+                };
+                let vids = root
+                    .query_selector_all(".panel:not(.panel-current) video.rendered-video")
+                    .unwrap();
+                for vid in vids.into_iter() {
+                    let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
+                    if !vid.paused() && !vid.ended() {
+                        auto_stopped = true;
+                    }
+                    vid.pause().unwrap();
+                }
 
-        // If we auto stopped a video, then auto play anyone that attached as current
-        if auto_stopped {
-            let vid = root.query_selector(".panel-current video.rendered-video").unwrap();
-            if let Some(vid) = vid {
-                let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
-                let _ = vid.play().unwrap();
-                auto_stopped = false;
-            }
-        }
-    }));
-    let mutation_observer = MutationObserver::new(mutation_handler.as_ref().unchecked_ref()).unwrap();
+                // If we auto stopped a video, then auto play anyone that attached as current
+                if auto_stopped {
+                    let vid = root
+                        .query_selector(".panel-current video.rendered-video")
+                        .unwrap();
+                    if let Some(vid) = vid {
+                        let vid: web_sys::HtmlVideoElement = vid.dyn_into().unwrap();
+                        let _ = vid.play().unwrap();
+                        auto_stopped = false;
+                    }
+                }
+            },
+        ));
+    let mutation_observer =
+        MutationObserver::new(mutation_handler.as_ref().unchecked_ref()).unwrap();
     mutation_handler.forget();
     Effect::new(move |_| {
         if let Some(root) = root.get() {
-            let opt =  web_sys::MutationObserverInit::new();
+            let opt = web_sys::MutationObserverInit::new();
             opt.set_child_list(true);
-            mutation_observer.observe_with_options(
-                &root,
-                &opt,
-            ).unwrap();
+            mutation_observer.observe_with_options(&root, &opt).unwrap();
         }
     });
 
