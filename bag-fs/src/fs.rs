@@ -1,16 +1,14 @@
 // Default fs handler
 
 use axum::{body::Body, http::HeaderMap, response::Response};
+use ouroboros::self_referencing;
 use std::{
-    cell::UnsafeCell,
-    io::{Read, Seek},
-    marker::PhantomData,
+    fs::File,
+    io::{self, Cursor, Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
     path::PathBuf,
-    ptr::NonNull,
     range::Range,
 };
-use typed_arena::Arena;
 use zip::{HasZipMetadata, ZipArchive};
 
 use crate::{
@@ -96,60 +94,124 @@ enum FileOpenResult {
     Unchanged(String),
 }
 
-trait FileOpen: Read + Seek + Send {}
-impl<T: Read + Seek + Send> FileOpen for T {}
-
-enum ArenaSlot<'a> {
-    ZipArchive(ZipArchive<&'a mut Box<dyn FileOpen + 'a>>),
-    File(Box<dyn FileOpen + 'a>),
+#[self_referencing]
+struct ZipFileDisk {
+    archive: ZipArchive<File>,
+    #[borrows(mut archive)]
+    #[not_covariant]
+    file: zip::read::ZipFile<'this, File>,
 }
 
-trait ArenaSlotVariant<'a> {
-    fn into_arena(self, arena: &'a Arena<ArenaSlot<'a>>) -> &'a mut Self;
+#[self_referencing]
+struct ZipFileMem {
+    archive: ZipArchive<Cursor<Vec<u8>>>,
+    #[borrows(mut archive)]
+    #[not_covariant]
+    file: zip::read::ZipFile<'this, Cursor<Vec<u8>>>,
 }
 
-macro_rules! impl_slot {
-    (type $t:ty, $v:ident) => {
-        impl<'a> ArenaSlotVariant<'a> for $t {
-            fn into_arena(self, arena: &'a Arena<ArenaSlot<'a>>) -> &'a mut Self {
-                let slot = ArenaSlot::$v(self);
-                let slot_ref = arena.alloc(slot);
-                match slot_ref {
-                    ArenaSlot::$v(inner) => inner,
-                    _ => unreachable!(),
-                }
-            }
-        }
-    };
+enum NestedOpen {
+    File(NestedFile, u64),
+    InvalidArchive,
+    NotAFile,
 }
 
-impl_slot!(type ZipArchive<&mut Box<dyn FileOpen + 'a>>, ZipArchive);
-impl_slot!(type Box<dyn FileOpen + 'a>, File);
-
-struct NestedFile {
-    _arena: Box<Arena<ArenaSlot<'static>>>,
-    file: NonNull<Box<dyn FileOpen + 'static>>,
-    _not_sync: PhantomData<UnsafeCell<()>>,
+enum NestedFile {
+    File(File),
+    ZipFileDisk(ZipFileDisk),
+    ZipFileMem(ZipFileMem),
 }
-
-// `NestedFile` has exclusive access to the final reader and keeps the backing
-// arena alive. It is not `Sync`, so the reader cannot be accessed concurrently.
-unsafe impl Send for NestedFile {}
 
 impl NestedFile {
-    fn new(arena: Box<Arena<ArenaSlot<'static>>>, file: &'static mut Box<dyn FileOpen + 'static>) -> Self {
-        Self {
-            _arena: arena,
-            file: NonNull::from(file),
-            _not_sync: PhantomData,
+    fn open_zip_entry(self, nest: &str) -> Result<NestedOpen> {
+        match self {
+            NestedFile::File(file) => open_disk_zip_entry(file, nest),
+            NestedFile::ZipFileDisk(mut file) => {
+                let mut buffer = Vec::new();
+                file.with_file_mut(|file| file.read_to_end(&mut buffer))?;
+                open_mem_zip_entry(buffer, nest)
+            }
+            NestedFile::ZipFileMem(mut file) => {
+                let mut buffer = Vec::new();
+                file.with_file_mut(|file| file.read_to_end(&mut buffer))?;
+                open_mem_zip_entry(buffer, nest)
+            }
         }
     }
 
-    fn get_file(&mut self) -> &mut dyn FileOpen {
-        // The pointer targets a file allocated in `_arena`; the Arc keeps the
-        // arena alive for at least as long as this handle.
-        unsafe { self.file.as_mut().as_mut() }
+    fn skip_to(&mut self, offset: u64) -> io::Result<()> {
+        match self {
+            NestedFile::File(file) => file.seek(SeekFrom::Start(offset)).map(|_| ()),
+            NestedFile::ZipFileDisk(file) => file.with_file_mut(|file| discard_exact(file, offset)),
+            NestedFile::ZipFileMem(file) => file.with_file_mut(|file| discard_exact(file, offset)),
+        }
     }
+
+    fn read_limited_to_end(&mut self, limit: u64, result: &mut Vec<u8>) -> io::Result<usize> {
+        match self {
+            NestedFile::File(file) => file.take(limit).read_to_end(result),
+            NestedFile::ZipFileDisk(file) => {
+                file.with_file_mut(|file| file.take(limit).read_to_end(result))
+            }
+            NestedFile::ZipFileMem(file) => {
+                file.with_file_mut(|file| file.take(limit).read_to_end(result))
+            }
+        }
+    }
+}
+
+fn discard_exact(reader: &mut impl Read, len: u64) -> io::Result<()> {
+    let copied = io::copy(&mut reader.take(len), &mut io::sink())?;
+    if copied == len {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "failed to skip requested number of bytes",
+        ))
+    }
+}
+
+fn open_disk_zip_entry(file: File, nest: &str) -> Result<NestedOpen> {
+    let archive = match ZipArchive::new(file) {
+        Ok(archive) => archive,
+        Err(_) => return Ok(NestedOpen::InvalidArchive),
+    };
+    let Some(index) = archive.index_for_path(nest) else {
+        return Ok(NestedOpen::NotAFile);
+    };
+    let file = match (ZipFileDiskTryBuilder {
+        archive,
+        file_builder: move |archive| archive.by_index(index),
+    })
+    .try_build()
+    {
+        Ok(file) => file,
+        Err(_) => return Ok(NestedOpen::NotAFile),
+    };
+    let size = file.with_file(|file| file.get_metadata().uncompressed_size);
+    Ok(NestedOpen::File(NestedFile::ZipFileDisk(file), size))
+}
+
+fn open_mem_zip_entry(buffer: Vec<u8>, nest: &str) -> Result<NestedOpen> {
+    let archive = match ZipArchive::new(Cursor::new(buffer)) {
+        Ok(archive) => archive,
+        Err(_) => return Ok(NestedOpen::InvalidArchive),
+    };
+    let Some(index) = archive.index_for_path(nest) else {
+        return Ok(NestedOpen::NotAFile);
+    };
+    let file = match (ZipFileMemTryBuilder {
+        archive,
+        file_builder: move |archive| archive.by_index(index),
+    })
+    .try_build()
+    {
+        Ok(file) => file,
+        Err(_) => return Ok(NestedOpen::NotAFile),
+    };
+    let size = file.with_file(|file| file.get_metadata().uncompressed_size);
+    Ok(NestedOpen::File(NestedFile::ZipFileMem(file), size))
 }
 
 impl FsHandler {
@@ -179,15 +241,9 @@ impl FsHandler {
             return Ok(FileOpenResult::Unchanged(encoded_etag));
         }
 
-        // Secondly, recursively open the nested file
-        let arena = Box::new(Arena::new());
-        // The returned `NestedFile` owns an Arc to this arena, so arena-backed
-        // readers remain valid after crossing the `spawn_blocking` boundary.
-        let arena_ref: &'static Arena<ArenaSlot<'static>> = unsafe { &*(&*arena as *const _) };
         let nests = subpath.iter().flat_map(|s| s.split("/:/"));
         let mut current_mime = mime_guess::from_path(tgt).first_or_octet_stream();
-        let file: Box<dyn FileOpen + 'static> = Box::new(file);
-        let mut current_file = file.into_arena(arena_ref);
+        let mut current_file = NestedFile::File(file);
         let mut current_file_size = metadata.size();
 
         for nest in nests {
@@ -195,25 +251,19 @@ impl FsHandler {
                 return Ok(FileOpenResult::InvalidArchive);
             }
 
-            let Ok(archive) = zip::ZipArchive::new(current_file) else {
-                return Ok(FileOpenResult::InvalidArchive);
+            let (file, size) = match current_file.open_zip_entry(nest)? {
+                NestedOpen::File(file, size) => (file, size),
+                NestedOpen::InvalidArchive => return Ok(FileOpenResult::InvalidArchive),
+                NestedOpen::NotAFile => return Ok(FileOpenResult::NotAFile),
             };
-            let archive = archive.into_arena(arena_ref);
-            let Some(index) = archive.index_for_path(nest) else {
-                return Ok(FileOpenResult::NotAFile);
-            };
-            let Ok(file) = archive.by_index_seek(index) else {
-                return Ok(FileOpenResult::NotAFile);
-            };
-            current_file_size = file.get_metadata().uncompressed_size;
-            let file: Box<dyn FileOpen + 'static> = Box::new(file);
+            current_file_size = size;
             current_mime = mime_guess::from_path(nest).first_or_octet_stream();
-            current_file = file.into_arena(arena_ref);
+            current_file = file;
         }
 
         Ok(FileOpenResult::File {
             mime: current_mime,
-            file: NestedFile::new(arena, current_file),
+            file: current_file,
             size: current_file_size,
             etag: encoded_etag,
         })
@@ -293,15 +343,13 @@ impl FsHandler {
         let mut read_len = size;
         // FIXME: use a state machine to impl Stream
         if let Some(Range { start, end }) = range {
-            file.get_file().seek(std::io::SeekFrom::Start(start))?;
+            file.skip_to(start)?;
             read_len = end - start;
         }
         let body = tokio::task::spawn_blocking(move || {
             let mut file = file;
             let mut result = Vec::with_capacity(read_len as usize);
-            file.get_file()
-                .take(read_len)
-                .read_to_end(&mut result)
+            file.read_limited_to_end(read_len, &mut result)
                 .map(|_| result)
         })
         .await
