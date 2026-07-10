@@ -61,15 +61,18 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
     let mut metadata = vec![Component::Text(Text {
         content: name.to_owned(),
         variant: bag_lib::ui::TextVariant::Title,
+        action: None,
     })];
     if let Some(parent) = path.parent() {
         metadata.push(Component::Text(Text {
             content: "Path".to_owned(),
             variant: bag_lib::ui::TextVariant::Hint,
+            action: None,
         }));
         metadata.push(Component::Text(Text {
             content: bare.clone(),
             variant: bag_lib::ui::TextVariant::Body,
+            action: None,
         }));
         metadata.push(Component::Button(Button {
             text: "Go up".to_owned(),

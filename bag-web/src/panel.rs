@@ -25,16 +25,26 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         async move { c.handle(&a).await }
     });
 
-    let render = move |comp: &bag_lib::ui::Component| {
+    fn render_static(dispatch: &Action<bag_lib::action::Action, ()>, backend: &str, comp: &bag_lib::ui::Component) -> AnyView {
         match comp {
-            bag_lib::ui::Component::Text(Text { content, variant }) => {
+            bag_lib::ui::Component::Text(Text { content, variant, action }) => {
                 let variant = match variant {
                     TextVariant::Title => "title",
                     TextVariant::Body => "body",
                     TextVariant::Hint => "hint",
                 };
+                let mut class = format!("rendered-text rendered-text-{variant}");
+                if action.is_some() {
+                    class.push_str(" rendered-text-link");
+                }
+                let action = action.clone();
+                let dispatch = dispatch.clone();
                 view! {
-                    <div class={format!("rendered-text rendered-text-{variant}")}>
+                    <div class={class} on:click={move |_| {
+                        if let Some(ref a) = action {
+                            dispatch.dispatch(a.clone());
+                        }
+                    }}>
                         {content.clone()}
                     </div>
                 }
@@ -105,6 +115,35 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }}>{text}</button> }
                 .into_any()
             }
+            bag_lib::ui::Component::Box(bag_lib::ui::Box { horizontal, children, action }) => {
+                let children: Vec<_> = children.iter().map(|c| render_static(dispatch, backend, c)).collect();
+                let mut class = "rendered-box".to_owned();
+                if *horizontal {
+                    class.push_str(" rendered-box-horizontal");
+                };
+                if action.is_some() {
+                    class.push_str(" rendered-box-link");
+                }
+                let dispatch = dispatch.clone();
+                let action = action.clone();
+                view! {
+                    <div class={class} on:click={move |_| {
+                        if let Some(ref a) = action {
+                            dispatch.dispatch(a.clone());
+                        }
+                    }}>
+                        {children}
+                    </div>
+                }
+                .into_any()
+            }
+        }
+    }
+    let render = {
+        let dispatch = dispatch.clone();
+        let backend = backend.clone();
+        move |comp: &bag_lib::ui::Component| {
+            render_static(&dispatch, &backend, comp)
         }
     };
 

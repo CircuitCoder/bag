@@ -247,6 +247,13 @@ main > .layout-nav {
   margin-top: 20px;
 }
 
+.rendered-text-link {
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: rgba(from var(--foreground) r g b / 0.5);
+  cursor: pointer;
+}
+
 button,
 .rendered-button {
   padding: 5px 15px;
@@ -272,10 +279,25 @@ button,
   margin-top: 20px
 }
 
-.layout-main .rendered-text {
+.layout-main > .rendered-text {
   padding: 20px;
   max-width: 600px;
   width: 100%;
+}
+
+.rendered-box {
+  border: 1px solid rgba(from var(--foreground) r g b / 0.1);
+  padding: 10px 20px;
+  margin: 20px;
+  width: calc(100% - 40px)
+}
+
+.rendered-box-link {
+  cursor: pointer;
+}
+
+.rendered-box-link:hover {
+  border-color: rgba(from var(--foreground) r g b / 0.2);
 }
 
 /* Dialog */
