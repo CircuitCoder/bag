@@ -119,7 +119,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         let children = &children[..(limit as usize).min(children.len())];
 
         let images = children
-            .into_iter()
+            .iter()
             .map(|row| GalleryImage {
                 ty: if row.is_directory {
                     GalleryImageType::Directory
@@ -232,8 +232,7 @@ pub fn build(db: Database, root: PathBuf) -> Router {
             if let Some(etag) = headers
                 .get(axum::http::header::IF_NONE_MATCH)
                 .and_then(|e| e.to_str().ok())
-            {
-                if let Ok(Some(metadata)) = metadata {
+                && let Ok(Some(metadata)) = metadata {
                     // TODO: correctly set subpath
                     let mtime: std::time::SystemTime = metadata.mtime.into();
                     let ref_etag = Etag {
@@ -250,7 +249,6 @@ pub fn build(db: Database, root: PathBuf) -> Router {
                             .unwrap();
                     }
                 }
-            }
             // FIXME: get length
 
             fs.handle(path, &headers).await.into_response()
@@ -310,11 +308,11 @@ pub fn build(db: Database, root: PathBuf) -> Router {
                     (tb, "image/webp".to_owned())
                 };
 
-                return Ok(Response::builder()
+                Ok(Response::builder()
                     .header("Content-Type", mime)
                     .header("Cache-Control", "max-age=3600, stale-while-revalidate=86400")
                     .body(tb.into())
-                    .unwrap());
+                    .unwrap())
             }.await;
 
             match resp {
@@ -384,11 +382,11 @@ pub fn build(db: Database, root: PathBuf) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    
+    Router::new()
         .route("/v1/raw/thumbnail/{id}", get(thumbnail_handler))
         .nest("/v1/raw/file/", file_handler)
         .nest("/v1/render/", render_handler)
         .with_state(state)
-        .layer(cors);
-    app
+        .layer(cors)
 }

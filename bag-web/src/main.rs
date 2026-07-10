@@ -22,11 +22,7 @@ const BACKEND_KEY: &str = "backend";
 const RECENT_BACKENDS_KEY: &str = "recentBackends";
 
 fn local_storage() -> web_sys::Storage {
-    web_sys::window()
-        .unwrap()
-        .local_storage()
-        .unwrap()
-        .unwrap()
+    web_sys::window().unwrap().local_storage().unwrap().unwrap()
 }
 
 fn read_recent_backends(local_storage: &web_sys::Storage) -> Vec<String> {
@@ -205,7 +201,7 @@ impl Context {
     fn subscribe(&self, target: &RenderTarget, mut retire: Receiver<()>) {
         let data = target.data.clone();
         let path = target.path.clone();
-        let targets = self.targets.clone();
+        let targets = self.targets;
         let ctx = self.clone();
         spawn_local(async move {
             let mut stream = data.to_stream().fuse();
@@ -443,7 +439,10 @@ fn App() -> AnyView {
     web_sys::console::log_1(&"App mounted".into());
     let storage = local_storage();
     let backend = storage.get_item(BACKEND_KEY).unwrap();
-    let recent_backends = RwSignal::new(init_recent_backends(&storage, backend.as_ref().map(|s| s.as_str())));
+    let recent_backends = RwSignal::new(init_recent_backends(
+        &storage,
+        backend.as_deref(),
+    ));
     let backend_input = NodeRef::<Input>::new();
 
     let render_backend_fragment = move || {
@@ -498,7 +497,8 @@ fn App() -> AnyView {
             <main class="backend-init">
                 {render_backend_fragment()}
             </main>
-        }.into_any();
+        }
+        .into_any();
     };
     web_sys::console::log_1(&format!("Using backend: {}", backend).into());
     // FIXME: dynamic backend

@@ -46,7 +46,7 @@ where
     let resp_text = JsFuture::from(resp.text()?).await?.as_string().unwrap();
 
     // Unexpected HTTP code. We should've never see 1xx and 3xx. For 4xx and 5xx, return the code and text.
-    if code < 200 || code >= 300 {
+    if !(200..300).contains(&code) {
         return Err(FetchError::HTTPFailure(code, resp_text));
     }
 

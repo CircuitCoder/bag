@@ -14,9 +14,9 @@ impl ToString for Segment<'_> {
         let mut result = urlencoding::encode(self.0.as_ref()).to_string();
 
         for (k, v) in self.1.iter() {
-            result.push_str(",");
+            result.push(',');
             result.push_str(&urlencoding::encode(k));
-            result.push_str("=");
+            result.push('=');
             result.push_str(&urlencoding::encode(v));
         }
 
@@ -97,7 +97,7 @@ impl<'s> TryFrom<&'s str> for Path<'s> {
     type Error = SegmentParseError;
 
     fn try_from(s: &'s str) -> Result<Self, Self::Error> {
-        if s == "" {
+        if s.is_empty() {
             return Ok(Path(Cow::Borrowed(&[])));
         }
 

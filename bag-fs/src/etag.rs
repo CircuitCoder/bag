@@ -30,6 +30,6 @@ pub fn check_header(computed: &str, header: &str) -> bool {
 
     header.split(",").any(|seg| {
         let trimmed = seg.trim();
-        return trimmed == with_quotes;
+        trimmed == with_quotes
     })
 }

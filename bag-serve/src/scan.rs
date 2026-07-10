@@ -14,7 +14,7 @@ use inotify::{StreamExt, WatchDescriptor, Watches};
 use crate::db::Database;
 
 fn inotify_mask() -> inotify::WatchMask {
-    return inotify::WatchMask::CREATE
+    inotify::WatchMask::CREATE
         | inotify::WatchMask::DELETE
         | inotify::WatchMask::CLOSE_WRITE
         | inotify::WatchMask::MOVED_FROM
@@ -22,7 +22,7 @@ fn inotify_mask() -> inotify::WatchMask {
         | inotify::WatchMask::ATTRIB
         // Erroring types
         | inotify::WatchMask::DELETE_SELF
-        | inotify::WatchMask::MOVE_SELF;
+        | inotify::WatchMask::MOVE_SELF
 }
 
 pub fn sanitize_base_path<P: AsRef<Path>>(base: P) -> anyhow::Result<()> {
@@ -105,7 +105,7 @@ impl WatchContext {
         if self.fwd.contains_key(path) {
             return Ok(false);
         }
-        let wd = self.handle.add(&root.join(path), mask)?;
+        let wd = self.handle.add(root.join(path), mask)?;
 
         // Remove all path mapping to wd in rev,
         // so that we'll not be errornously removed
@@ -131,13 +131,12 @@ impl WatchContext {
         let Some(wd) = self.fwd.remove(path) else {
             return Ok(false);
         };
-        if let Err(e) = self.handle.remove(wd) {
-            if e.kind() != std::io::ErrorKind::InvalidInput {
+        if let Err(e) = self.handle.remove(wd)
+            && e.kind() != std::io::ErrorKind::InvalidInput {
                 return Err(e.into());
             }
             // EINVAL means the watch descriptor is already removed (maybe automatically)
             // which should be fine
-        }
         // Don't modify rev yet
         Ok(true)
     }
@@ -155,7 +154,7 @@ impl WatchContext {
             })?;
 
         // self.rev must have wd now
-        if self.rev.get(&wd).unwrap().len() == 0 {
+        if self.rev.get(&wd).unwrap().is_empty() {
             self.rev.remove(&wd);
             // What we've just removed is the last for wd, so try to remove fwd mapping
             if self.fwd.get(&ret) == Some(&wd) {
@@ -300,7 +299,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
                 ));
             }
 
-            let (id, _) = update_file(&db, &cur, &metadata, parent, scan_id, false).await?;
+            let (id, _) = update_file(db, &cur, &metadata, parent, scan_id, false).await?;
             parent = Some(id);
             cur.push(seg.as_os_str());
         }
@@ -337,7 +336,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
             watches.lock().await.add(root, base, inotify_mask())?;
         }
 
-        let joined = root.join(&base);
+        let joined = root.join(base);
         // TODO: we may've been deleted in FS
         let mut entries = ignore_missing!(tokio::fs::read_dir(joined).await, { return Ok(()) });
         while let Some(entry) = entries.next_entry().await? {
@@ -352,7 +351,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
             }
 
             let (cid, _) = match update_file(
-                &db,
+                db,
                 child_path.as_path(),
                 &metadata,
                 Some(id),
@@ -578,12 +577,11 @@ pub async fn watch<P1: AsRef<Path>, P2: AsRef<Path>>(
                 let evbase = {
                     ctx.lock().await.query_wd_concrete(ev.wd.clone()).ok_or_else(|| anyhow::anyhow!("Watch descriptor {} not found", ev.wd.get_watch_descriptor_id()))?.to_path_buf()
                 };
-                if (inotify::EventMask::DELETE_SELF | inotify::EventMask::MOVE_SELF).intersects(ev.mask) {
-                    if evbase == base.as_ref() {
+                if (inotify::EventMask::DELETE_SELF | inotify::EventMask::MOVE_SELF).intersects(ev.mask)
+                    && evbase == base.as_ref() {
                         anyhow::bail!("Base directory {} was moved / deleted", fullbase.display());
                     };
                     // For other cases, watches will get removed inside rescan_inner
-                }
 
                 // The relative path (with root) of the updated file
                 let mut file: Cow<'_, Path> = evbase.into();

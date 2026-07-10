@@ -25,9 +25,17 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         async move { c.handle(&a).await }
     });
 
-    fn render_static(dispatch: &Action<bag_lib::action::Action, ()>, backend: &str, comp: &bag_lib::ui::Component) -> AnyView {
+    fn render_static(
+        dispatch: &Action<bag_lib::action::Action, ()>,
+        backend: &str,
+        comp: &bag_lib::ui::Component,
+    ) -> AnyView {
         match comp {
-            bag_lib::ui::Component::Text(Text { content, variant, action }) => {
+            bag_lib::ui::Component::Text(Text {
+                content,
+                variant,
+                action,
+            }) => {
                 let variant = match variant {
                     TextVariant::Title => "title",
                     TextVariant::Body => "body",
@@ -38,7 +46,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                     class.push_str(" rendered-text-link");
                 }
                 let action = action.clone();
-                let dispatch = dispatch.clone();
+                let dispatch = *dispatch;
                 view! {
                     <div class={class} on:click={move |_| {
                         if let Some(ref a) = action {
@@ -51,7 +59,10 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 .into_any()
             }
             bag_lib::ui::Component::Image(Image { resource, mime }) => {
-                let mime = mime.as_ref().and_then(|m| mime_guess::mime::Mime::from_str(m).ok()).unwrap_or_else(|| mime_guess::from_path(&resource).first_or_octet_stream());
+                let mime = mime
+                    .as_ref()
+                    .and_then(|m| mime_guess::mime::Mime::from_str(m).ok())
+                    .unwrap_or_else(|| mime_guess::from_path(resource).first_or_octet_stream());
                 let mime_type = mime.type_().as_str();
                 if mime_type == "video" {
                     return view! {
@@ -64,16 +75,13 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 .into_any()
             }
             bag_lib::ui::Component::Gallery(Gallery { images }) => {
-                let items: Vec<_> = images.into_iter().map(|img| {
-                    let thumbnail = img.thumbnail.as_ref().and_then(|t| {
-                        // It's an image, we can render it
-                        Some(view! {
+                let items: Vec<_> = images.iter().map(|img| {
+                    let thumbnail = img.thumbnail.as_ref().map(|t| view! {
                             <img
                                 class="rendered-gallery-thumbnail"
                                 loading="lazy"
                                 src={format!("{}/raw/{t}", backend)} />
-                        }.into_any())
-                    });
+                        }.into_any());
 
                     let thumbnail = thumbnail.unwrap_or_else(|| {
                         view! {
@@ -83,7 +91,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
 
                     match img.action {
                         Some(ref a) => {
-                            let dispatch = dispatch.clone();
+                            let dispatch = *dispatch;
                             let a = a.clone();
                             view! {
                                 <div class="rendered-gallery-img" data-name={&img.name} on:click={move |_| {
@@ -106,8 +114,8 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }
                 .into_any()
             }
-            bag_lib::ui::Component::Button(Button { text, icon, action }) => {
-                let dispatch = dispatch.clone();
+            bag_lib::ui::Component::Button(Button { text, icon: _, action }) => {
+                let dispatch = *dispatch;
                 let text = text.clone();
                 let action = action.clone();
                 view! { <button class="rendered-button" on:click={move |_| {
@@ -115,8 +123,15 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }}>{text}</button> }
                 .into_any()
             }
-            bag_lib::ui::Component::Box(bag_lib::ui::Box { horizontal, children, action }) => {
-                let children: Vec<_> = children.iter().map(|c| render_static(dispatch, backend, c)).collect();
+            bag_lib::ui::Component::Box(bag_lib::ui::Box {
+                horizontal,
+                children,
+                action,
+            }) => {
+                let children: Vec<_> = children
+                    .iter()
+                    .map(|c| render_static(dispatch, backend, c))
+                    .collect();
                 let mut class = "rendered-box".to_owned();
                 if *horizontal {
                     class.push_str(" rendered-box-horizontal");
@@ -124,7 +139,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 if action.is_some() {
                     class.push_str(" rendered-box-link");
                 }
-                let dispatch = dispatch.clone();
+                let dispatch = *dispatch;
                 let action = action.clone();
                 view! {
                     <div class={class} on:click={move |_| {
@@ -140,11 +155,9 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         }
     }
     let render = {
-        let dispatch = dispatch.clone();
+        let dispatch = dispatch;
         let backend = backend.clone();
-        move |comp: &bag_lib::ui::Component| {
-            render_static(&dispatch, &backend, comp)
-        }
+        move |comp: &bag_lib::ui::Component| render_static(&dispatch, &backend, comp)
     };
 
     let nav_ctx = ctx.clone();
@@ -200,12 +213,12 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             let main = layout
                 .main
                 .iter()
-                .map(|comp| render(comp))
+                .map(&render)
                 .collect::<Vec<_>>();
             let metadata = layout
                 .metadata
                 .iter()
-                .map(|comp| render(comp))
+                .map(&render)
                 .collect::<Vec<_>>();
             let no_metadata =
                 metadata.is_empty() && layout.left.is_none() && layout.right.is_none();
@@ -225,7 +238,10 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             }
             .into_any()
         }
-        Some(Ok(LayoutOrAction::Action(_))) => view! {}.into_any(),
+        Some(Ok(LayoutOrAction::Action(_))) => {
+            let _: () = view! {};
+            ().into_any()
+        },
     };
 
     view! {

@@ -292,8 +292,8 @@ impl FsHandler {
             move || {
                 FsHandler::get_nested(
                     tgt.to_str().unwrap(),
-                    subpath.as_ref().map(String::as_str),
-                    header_etag.as_ref().map(String::as_str),
+                    subpath.as_deref(),
+                    header_etag.as_deref(),
                 )
             }
         })
@@ -376,46 +376,46 @@ impl FsHandler {
                 format!("bytes {}-{}/{}", start, end - 1, size),
             );
         }
-        return Ok(resp.body(Body::from(body)).unwrap());
+        Ok(resp.body(Body::from(body)).unwrap())
     }
 
     pub async fn handle(&self, path: &str, headers: &HeaderMap) -> Response {
         match self.load_fs(path, headers).await {
             Err(crate::Error::NotFound) => {
-                return Response::builder()
+                Response::builder()
                     .status(404)
                     .body("Not Found".into())
-                    .unwrap();
+                    .unwrap()
             }
             Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Response::builder()
+                Response::builder()
                     .status(404)
                     .body("Not Found".into())
-                    .unwrap();
+                    .unwrap()
             }
             Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                return Response::builder()
+                Response::builder()
                     .status(403)
                     .body("Permission Denied".into())
-                    .unwrap();
+                    .unwrap()
             }
             Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::IsADirectory => {
-                return Response::builder()
+                Response::builder()
                     .status(400)
                     .body("Reading a directory".into())
-                    .unwrap();
+                    .unwrap()
             }
             Err(crate::Error::RangeUnsatisfiable) => {
-                return Response::builder()
+                Response::builder()
                     .status(416)
                     .body("Range Unsatisfiable".into())
-                    .unwrap();
+                    .unwrap()
             }
             Err(e) => {
-                return Response::builder()
+                Response::builder()
                     .status(500)
                     .body(format!("Internal Server Error: {}", e).into())
-                    .unwrap();
+                    .unwrap()
             }
             Ok(resp) => resp,
         }
