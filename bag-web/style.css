@@ -300,6 +300,52 @@ button,
   border-color: rgba(from var(--foreground) r g b / 0.2);
 }
 
+/* Settigns & Input */
+.input-row {
+  display: flex;
+  background: rgba(from var(--foreground) r g b / 0.1);
+  border-radius: 4px;
+}
+
+.input-row input {
+  flex: 1;
+  outline: none;
+  border: none;
+  background: transparent;
+  color: var(--foreground);
+  padding: 0 10px;
+}
+
+.input-row input::placeholder {
+  color: rgba(from var(--foreground) r g b / 0.5);
+}
+
+.backend-row {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.backend-url {
+  flex: 1;
+  font-family: var(--font-monospace);
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: rgba(from var(--foreground) r g b / 0.5);
+  margin-bottom: 5px;
+}
+
+.backend-init {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100vh;
+  width: 100%;
+  max-width: 480px;
+  padding: 40px;
+  margin: 0 auto;
+}
+
 /* Dialog */
 dialog {
   background: var(--background);
@@ -308,6 +354,11 @@ dialog {
   max-height: calc(100svh - 40px);
   padding: 20px;
   border: none;
+  color: inherit;
+}
+
+dialog > :first-child {
+  margin-top: 0;
 }
 
 dialog::backdrop {

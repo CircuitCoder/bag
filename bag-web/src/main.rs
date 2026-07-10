@@ -6,13 +6,61 @@ use futures::{
     channel::oneshot::{Receiver, Sender},
     select,
 };
-use leptos::{html::Div, prelude::*, task::spawn_local};
+use leptos::{
+    html::{Div, Input},
+    prelude::*,
+    task::spawn_local,
+};
 use web_sys::{MutationObserver, wasm_bindgen::prelude::*};
 
 use crate::util::{FetchError, NodeListExt};
 
 mod panel;
 mod util;
+
+const BACKEND_KEY: &str = "backend";
+const RECENT_BACKENDS_KEY: &str = "recentBackends";
+
+fn local_storage() -> web_sys::Storage {
+    web_sys::window()
+        .unwrap()
+        .local_storage()
+        .unwrap()
+        .unwrap()
+}
+
+fn read_recent_backends(local_storage: &web_sys::Storage) -> Vec<String> {
+    local_storage
+        .get_item(RECENT_BACKENDS_KEY)
+        .unwrap()
+        .and_then(|recent| serde_json::from_str::<Vec<String>>(&recent).ok())
+        .unwrap_or_default()
+}
+
+fn write_recent_backends(local_storage: &web_sys::Storage, recent_backends: &[String]) {
+    local_storage
+        .set_item(
+            RECENT_BACKENDS_KEY,
+            &serde_json::to_string(recent_backends).unwrap(),
+        )
+        .unwrap();
+}
+
+fn init_recent_backends(local_storage: &web_sys::Storage, backend: Option<&str>) -> Vec<String> {
+    let mut recent_backends = read_recent_backends(local_storage);
+    if let Some(backend) = backend {
+        recent_backends.retain(|recent_backend| recent_backend != backend);
+        recent_backends.insert(0, backend.to_owned());
+        write_recent_backends(local_storage, &recent_backends);
+    }
+    recent_backends
+}
+
+fn set_backend_and_reload(backend: String) {
+    let local_storage = local_storage();
+    local_storage.set_item(BACKEND_KEY, &backend).unwrap();
+    web_sys::window().unwrap().location().reload().unwrap();
+}
 
 #[derive(Clone)]
 struct Context {
@@ -390,23 +438,68 @@ fn swipe_decide(offset: f64, velocity: f64, threshold: f64) -> SwipeDecision {
 }
 
 #[component]
-fn App() -> impl IntoView {
+fn App() -> AnyView {
     console_error_panic_hook::set_once();
     web_sys::console::log_1(&"App mounted".into());
-    let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
-    let backend = local_storage
-        .get_item("backend")
-        .unwrap()
-        .unwrap_or_else(|| {
-            // Prompting user
-            let backend = web_sys::window()
-                .unwrap()
-                .prompt_with_message("Backend URL")
-                .unwrap()
-                .unwrap();
-            local_storage.set_item("backend", &backend).unwrap();
-            backend
-        });
+    let storage = local_storage();
+    let backend = storage.get_item(BACKEND_KEY).unwrap();
+    let recent_backends = RwSignal::new(init_recent_backends(&storage, backend.as_ref().map(|s| s.as_str())));
+    let backend_input = NodeRef::<Input>::new();
+
+    let render_backend_fragment = move || {
+        view! {
+            <h2>Backend</h2>
+            <div class="input-row">
+                <input node_ref=backend_input type="text" placeholder="Backend URL" />
+                <button
+                    on:click=move |_| {
+                        if let Some(input) = backend_input.get() {
+                            set_backend_and_reload(input.value());
+                        }
+                    }
+                >Set Backend</button>
+            </div>
+            <h3>Recent Backends</h3>
+            <For
+                each=move || recent_backends.get()
+                key=|backend| backend.clone()
+                let(backend)
+            >
+                <div
+                    class="backend-row"
+                    on:click={
+                        let backend = backend.clone();
+                        move |_| {
+                            set_backend_and_reload(backend.clone());
+                        }
+                    }
+                >
+                    <span class="backend-url">{backend.clone()}</span>
+                    <button
+                        on:click={
+                            let backend = backend.clone();
+                            move |ev| {
+                                ev.stop_propagation();
+                                let local_storage = local_storage();
+                                recent_backends.update(|recent_backends| {
+                                    recent_backends.retain(|recent_backend| recent_backend != &backend);
+                                    write_recent_backends(&local_storage, recent_backends);
+                                });
+                            }
+                        }
+                    >Delete</button>
+                </div>
+            </For>
+        }
+    };
+
+    let Some(backend) = backend else {
+        return view! {
+            <main class="backend-init">
+                {render_backend_fragment()}
+            </main>
+        }.into_any();
+    };
     web_sys::console::log_1(&format!("Using backend: {}", backend).into());
     // FIXME: dynamic backend
 
@@ -573,17 +666,18 @@ fn App() -> impl IntoView {
             node_ref=*ctx.cfg_dialog
             closedby="any"
         >
+            {render_backend_fragment()}
             <button
                 on:click={move |_| {
                     if web_sys::window().unwrap().confirm_with_message("Confirm? This will refresh the page.") != Ok(true) {
                         return;
                     }
-                    let local_storage = web_sys::window().unwrap().local_storage().unwrap().unwrap();
-                    local_storage.remove_item("backend").unwrap();
+                    let local_storage = local_storage();
+                    local_storage.remove_item(BACKEND_KEY).unwrap();
                     // Refresh
                     web_sys::window().unwrap().location().reload().unwrap();
                 }}
-            >Reset Backend</button>
+            >Clear Backend</button>
         </dialog>
         <div class="swipe-root"
             node_ref=root
@@ -702,6 +796,7 @@ fn App() -> impl IntoView {
             </For>
         </div>
     }
+    .into_any()
 }
 
 // TODO: configurable backend
