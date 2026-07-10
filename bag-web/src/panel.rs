@@ -1,5 +1,7 @@
 // A panel is a single rendered page
 
+use std::str::FromStr;
+
 use leptos::prelude::*;
 
 use bag_lib::ui::*;
@@ -38,8 +40,8 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }
                 .into_any()
             }
-            bag_lib::ui::Component::Image(Image { resource }) => {
-                let mime = mime_guess::from_path(&resource).first_or_octet_stream();
+            bag_lib::ui::Component::Image(Image { resource, mime }) => {
+                let mime = mime.as_ref().and_then(|m| mime_guess::mime::Mime::from_str(m).ok()).unwrap_or_else(|| mime_guess::from_path(&resource).first_or_octet_stream());
                 let mime_type = mime.type_().as_str();
                 if mime_type == "video" {
                     return view! {
@@ -116,7 +118,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                     view !{
                         <button
                             class="layout-nav-prev"
-                            on:click={move |_| ctx.navigate(p.clone())}>prev</button>
+                            on:click={move |_| ctx.navigate(p.clone(), false)}>prev</button>
                     }
                 })}
                 {
@@ -135,7 +137,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                     view !{
                         <button
                             class="layout-nav-next"
-                            on:click={move |_| ctx.navigate(p.clone())}>next</button>
+                            on:click={move |_| ctx.navigate(p.clone(), false)}>next</button>
                     }
                 })}
             </nav>

@@ -41,24 +41,26 @@ impl Context {
     pub async fn handle(&self, action: &Action) {
         match action {
             Action::Navigate { to: p } => {
-                self.navigate(p.clone());
+                self.navigate(p.clone(), false);
             }
         }
     }
 
     // TODO: relative navigation
-    pub fn navigate(&self, p: String) {
+    pub fn navigate(&self, p: String, skip_push: bool) {
         let targets = self.targets.read_untracked();
         if p == targets.current.path {
             return;
         }
 
-        web_sys::window()
-            .unwrap()
-            .history()
-            .unwrap()
-            .push_state_with_url(&JsValue::NULL, "", Some(&format!("/{}", p)))
-            .unwrap();
+        if !skip_push {
+            web_sys::window()
+                .unwrap()
+                .history()
+                .unwrap()
+                .push_state_with_url(&JsValue::NULL, "", Some(&format!("/{}", p)))
+                .unwrap();
+        }
 
         #[derive(Debug)]
         enum Operation {
@@ -428,7 +430,7 @@ fn App() -> impl IntoView {
                 .pathname()
                 .map(|e| e.trim_start_matches('/').trim_end_matches("/").to_owned())
                 .unwrap_or_else(|_| String::new());
-            ctx.navigate(new_path);
+            ctx.navigate(new_path, true);
         }) as Box<dyn FnMut(_)>);
         web_sys::window()
             .unwrap()
@@ -644,7 +646,7 @@ fn App() -> impl IntoView {
                                 if let Some(prev) = targets.prev.as_ref() {
                                     let path = prev.path.clone();
                                     drop(targets);
-                                    ctx.navigate(path);
+                                    ctx.navigate(path, false);
                                     offset_now -= vw;
                                 }
                             },
@@ -653,7 +655,7 @@ fn App() -> impl IntoView {
                                 if let Some(next) = targets.next.as_ref() {
                                     let path = next.path.clone();
                                     drop(targets);
-                                    ctx.navigate(path);
+                                    ctx.navigate(path, false);
                                     offset_now += vw;
                                 }
                             },

@@ -49,6 +49,7 @@ pub struct Text {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image {
     pub resource: String,
+    pub mime: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

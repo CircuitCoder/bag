@@ -201,6 +201,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
             top: vec![],
             main: vec![Component::Image(Image {
                 resource: format!("file/{}", bare),
+                mime: None,
             })],
             metadata,
             left: prev.map(|p| parent_path.clone() + p.path.rsplit("/").next().unwrap()),
