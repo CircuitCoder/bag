@@ -65,6 +65,12 @@ struct Context {
     cfg_dialog: Arc<NodeRef<leptos::html::Dialog>>,
 }
 
+enum NavigateType {
+    Push,
+    Pop,
+    Replace,
+}
+
 impl Context {
     pub fn new(backend: String, init: String) -> Self {
         let (retire_tx, retire_rx) = futures::channel::oneshot::channel();
@@ -85,24 +91,31 @@ impl Context {
     pub async fn handle(&self, action: &Action) {
         match action {
             Action::Navigate { to: p } => {
-                self.navigate(p.clone(), false);
+                self.navigate(p.clone(), NavigateType::Push);
             }
         }
     }
 
     // TODO: relative navigation
-    pub fn navigate(&self, p: String, skip_push: bool) {
+    pub fn navigate(&self, p: String, ty: NavigateType) {
         let targets = self.targets.read_untracked();
         if p == targets.current.path {
             return;
         }
 
-        if !skip_push {
+        if matches!(ty, NavigateType::Push) {
             web_sys::window()
                 .unwrap()
                 .history()
                 .unwrap()
                 .push_state_with_url(&JsValue::NULL, "", Some(&format!("/{}", p)))
+                .unwrap();
+        } else if matches!(ty, NavigateType::Replace) {
+            web_sys::window()
+                .unwrap()
+                .history()
+                .unwrap()
+                .replace_state_with_url(&JsValue::NULL, "", Some(&format!("/{}", p)))
                 .unwrap();
         }
 
@@ -523,7 +536,7 @@ fn App() -> AnyView {
                 .pathname()
                 .map(|e| e.trim_start_matches('/').trim_end_matches("/").to_owned())
                 .unwrap_or_else(|_| String::new());
-            ctx.navigate(new_path, true);
+            ctx.navigate(new_path, NavigateType::Pop);
         }) as Box<dyn FnMut(_)>);
         web_sys::window()
             .unwrap()
@@ -740,7 +753,7 @@ fn App() -> AnyView {
                                 if let Some(prev) = targets.prev.as_ref() {
                                     let path = prev.path.clone();
                                     drop(targets);
-                                    ctx.navigate(path, false);
+                                    ctx.navigate(path, NavigateType::Replace);
                                     offset_now -= vw;
                                 }
                             },
@@ -749,7 +762,7 @@ fn App() -> AnyView {
                                 if let Some(next) = targets.next.as_ref() {
                                     let path = next.path.clone();
                                     drop(targets);
-                                    ctx.navigate(path, false);
+                                    ctx.navigate(path, NavigateType::Replace);
                                     offset_now += vw;
                                 }
                             },

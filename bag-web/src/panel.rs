@@ -170,7 +170,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                     view !{
                         <button
                             class="layout-nav-prev"
-                            on:click={move |_| ctx.navigate(p.clone(), false)}>prev</button>
+                            on:click={move |_| ctx.navigate(p.clone(), crate::NavigateType::Replace)}>prev</button>
                     }
                 })}
                 {
@@ -189,7 +189,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                     view !{
                         <button
                             class="layout-nav-next"
-                            on:click={move |_| ctx.navigate(p.clone(), false)}>next</button>
+                            on:click={move |_| ctx.navigate(p.clone(), crate::NavigateType::Replace)}>next</button>
                     }
                 })}
             </nav>
