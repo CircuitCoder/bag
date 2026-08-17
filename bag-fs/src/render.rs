@@ -121,8 +121,7 @@ mod tests {
 
     #[test]
     fn preserves_archive_arguments_while_building_paths() {
-        let path =
-            Path::try_from("file/gallery.zip/%3A,password=secret,limit=20,offset=40").unwrap();
+        let path = Path::try_from("file/gallery.zip/%3A,pw=secret,limit=20,offset=40").unwrap();
         let child = archive_child_path(&path, "photo one.png");
 
         assert_eq!(
@@ -133,12 +132,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["file", "gallery.zip", ":", "photo one.png"]
         );
-        assert_eq!(child.segments()[2].arg("password"), Some("secret"));
+        assert_eq!(child.segments()[2].arg("pw"), Some("secret"));
         assert_eq!(child.segments()[2].arg("limit"), None);
         assert_eq!(child.segments()[2].arg("offset"), None);
 
         let normalized = path_without_pagination(&path);
-        assert_eq!(normalized.segments()[2].arg("password"), Some("secret"));
+        assert_eq!(normalized.segments()[2].arg("pw"), Some("secret"));
         assert_eq!(archive_parent_path(&child), Some(normalized));
     }
 
@@ -150,7 +149,7 @@ mod tests {
             "file/gallery.zip/%3A"
         );
 
-        let root = Path::try_from("file/gallery.zip/%3A,password=secret").unwrap();
+        let root = Path::try_from("file/gallery.zip/%3A,pw=secret").unwrap();
         assert_eq!(archive_parent_path(&root).unwrap().to_string(), "file");
     }
 
@@ -158,8 +157,7 @@ mod tests {
     fn renders_archive_listing_and_classifies_nested_archives_by_mime() {
         let layout = render_archive(
             ArchiveRenderParams {
-                path: Path::try_from("file/gallery.zip/%3A,password=secret,limit=2,offset=0")
-                    .unwrap(),
+                path: Path::try_from("file/gallery.zip/%3A,pw=secret,limit=2,offset=0").unwrap(),
                 default_page_size: 100,
                 thumbnail: |path: Path<'_>| Some(format!("thumb/{}", path.to_string())),
             },
@@ -191,7 +189,7 @@ mod tests {
         assert!(matches!(&gallery.images[1].ty, GalleryImageType::File));
         assert_eq!(
             gallery.images[1].thumbnail.as_deref(),
-            Some("thumb/file/gallery.zip/%3A,password=secret/photo%20one.jpg")
+            Some("thumb/file/gallery.zip/%3A,pw=secret/photo%20one.jpg")
         );
     }
 }

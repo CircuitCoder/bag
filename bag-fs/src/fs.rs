@@ -1,17 +1,16 @@
 // Default fs handler
 
 use axum::{body::Body, http::HeaderMap, response::Response};
-use bag_lib::path::Path as BagPath;
-use ouroboros::self_referencing;
+use bag_lib::path::{Path as BagPath, Segment};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fs::File,
     io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom},
     ops::Range,
-    os::unix::fs::MetadataExt,
     path::PathBuf,
 };
-use zip::{HasZipMetadata, ZipArchive};
+use zip::ZipArchive;
 
 use crate::{
     Result,
@@ -123,6 +122,16 @@ impl Seek for BufferedFile {
     }
 }
 
+impl BufferedFile {
+    fn skip_to(&mut self, offset: u64) -> io::Result<()> {
+        self.seek(SeekFrom::Start(offset)).map(|_| ())
+    }
+
+    fn read_limited_to_end(&mut self, limit: u64, result: &mut Vec<u8>) -> io::Result<usize> {
+        self.take(limit).read_to_end(result)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveEntry {
     pub name: String,
@@ -144,98 +153,11 @@ pub enum ArchiveFetch {
 enum FileOpenResult {
     File {
         mime: mime_guess::mime::Mime,
-        file: NestedFile,
+        file: BufferedFile,
         size: u64,
         etag: String,
     },
-    InvalidArchive,
-    NotAFile, // Not found or directory
     Unchanged(String),
-}
-
-#[self_referencing]
-struct ZipFileDisk {
-    archive: ZipArchive<File>,
-    #[borrows(mut archive)]
-    #[not_covariant]
-    file: zip::read::ZipFile<'this, File>,
-}
-
-#[self_referencing]
-struct ZipFileMem {
-    archive: ZipArchive<Cursor<Vec<u8>>>,
-    #[borrows(mut archive)]
-    #[not_covariant]
-    file: zip::read::ZipFile<'this, Cursor<Vec<u8>>>,
-}
-
-enum NestedOpen {
-    File(NestedFile, u64),
-    InvalidArchive,
-    NotAFile,
-}
-
-enum NestedFile {
-    File(File),
-    ZipFileDisk(ZipFileDisk),
-    ZipFileMem(ZipFileMem),
-}
-
-impl NestedFile {
-    fn open_zip_entry(self, nest: &str) -> Result<NestedOpen> {
-        match self {
-            NestedFile::File(file) => open_disk_zip_entry(file, nest),
-            NestedFile::ZipFileDisk(mut file) => {
-                let mut buffer = Vec::new();
-                file.with_file_mut(|file| file.read_to_end(&mut buffer))?;
-                open_mem_zip_entry(buffer, nest)
-            }
-            NestedFile::ZipFileMem(mut file) => {
-                let mut buffer = Vec::new();
-                file.with_file_mut(|file| file.read_to_end(&mut buffer))?;
-                open_mem_zip_entry(buffer, nest)
-            }
-        }
-    }
-
-    fn skip_to(&mut self, offset: u64) -> io::Result<()> {
-        match self {
-            NestedFile::File(file) => file.seek(SeekFrom::Start(offset)).map(|_| ()),
-            NestedFile::ZipFileDisk(file) => file.with_file_mut(|file| discard_exact(file, offset)),
-            NestedFile::ZipFileMem(file) => file.with_file_mut(|file| discard_exact(file, offset)),
-        }
-    }
-
-    fn read_limited_to_end(&mut self, limit: u64, result: &mut Vec<u8>) -> io::Result<usize> {
-        match self {
-            NestedFile::File(file) => file.take(limit).read_to_end(result),
-            NestedFile::ZipFileDisk(file) => {
-                file.with_file_mut(|file| file.take(limit).read_to_end(result))
-            }
-            NestedFile::ZipFileMem(file) => {
-                file.with_file_mut(|file| file.take(limit).read_to_end(result))
-            }
-        }
-    }
-}
-
-fn discard_exact(reader: &mut impl Read, len: u64) -> io::Result<()> {
-    let copied = io::copy(&mut reader.take(len), &mut io::sink())?;
-    if copied == len {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "failed to skip requested number of bytes",
-        ))
-    }
-}
-
-fn find_zip_entry<R: Read + Seek>(archive: &ZipArchive<R>, path: &str) -> Option<usize> {
-    find_zip_entry_decoded(archive, path).or_else(|| {
-        let decoded = urlencoding::decode(path).ok()?;
-        find_zip_entry_decoded(archive, &decoded)
-    })
 }
 
 fn find_zip_entry_decoded<R: Read + Seek>(archive: &ZipArchive<R>, path: &str) -> Option<usize> {
@@ -256,6 +178,123 @@ struct ZipEntryInfo {
     is_directory: bool,
 }
 
+struct ArchiveStep {
+    reference: BagPath<'static>,
+    password: Option<Vec<u8>>,
+    target: String,
+}
+
+struct ParsedFsPath {
+    outer: String,
+    steps: Vec<ArchiveStep>,
+}
+
+fn sanitized_path_prefix(path: &BagPath<'_>, end: usize) -> BagPath<'static> {
+    BagPath(Cow::Owned(
+        path.segments()[..end]
+            .iter()
+            .map(|segment| Segment(Cow::Owned(segment.name().to_owned()), BTreeMap::new()))
+            .collect(),
+    ))
+}
+
+fn parse_fs_path(path: &BagPath<'_>) -> Result<ParsedFsPath> {
+    let segments = path.segments();
+    let markers = segments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, segment)| (segment.name() == ":").then_some(index))
+        .collect::<Vec<_>>();
+    let outer_end = markers.first().copied().unwrap_or(segments.len());
+    let outer = segments[..outer_end]
+        .iter()
+        .map(Segment::name)
+        .collect::<Vec<_>>()
+        .join("/");
+    if outer.is_empty() {
+        return Err(crate::Error::NotFound);
+    }
+
+    let mut steps = Vec::with_capacity(markers.len());
+    for (position, marker) in markers.iter().copied().enumerate() {
+        let target_end = markers.get(position + 1).copied().unwrap_or(segments.len());
+        let target = segments[marker + 1..target_end]
+            .iter()
+            .map(Segment::name)
+            .collect::<Vec<_>>()
+            .join("/");
+        if target.is_empty() && position + 1 < markers.len() {
+            return Err(crate::Error::NotFound);
+        }
+        steps.push(ArchiveStep {
+            reference: sanitized_path_prefix(path, marker),
+            password: segments[marker]
+                .arg("pw")
+                .map(|value| value.as_bytes().to_vec()),
+            target,
+        });
+    }
+
+    Ok(ParsedFsPath { outer, steps })
+}
+
+fn is_zip_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+}
+
+fn ensure_zip(reference: &BagPath<'static>, is_directory: bool) -> Result<()> {
+    if is_directory
+        || !reference
+            .last()
+            .is_some_and(|segment| is_zip_path(segment.name()))
+    {
+        return Err(crate::Error::NotArchive(reference.clone()));
+    }
+    Ok(())
+}
+
+fn password_error(error: &zip::result::ZipError) -> bool {
+    matches!(
+        error,
+        zip::result::ZipError::InvalidPassword
+            | zip::result::ZipError::UnsupportedArchive(zip::result::ZipError::PASSWORD_REQUIRED)
+    )
+}
+
+fn map_zip_error<T>(result: zip::result::ZipResult<T>, reference: &BagPath<'static>) -> Result<T> {
+    result.map_err(|error| {
+        if password_error(&error) {
+            crate::Error::ArchivePassword(reference.clone())
+        } else {
+            crate::Error::Zip(error)
+        }
+    })
+}
+
+fn read_zip_file(
+    mut file: zip::read::ZipFile<'_, impl Read>,
+    encrypted: bool,
+    reference: &BagPath<'static>,
+) -> Result<Vec<u8>> {
+    let mut contents = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut contents).map_err(|error| {
+        if encrypted
+            && matches!(
+                error.kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput
+            )
+        {
+            crate::Error::ArchivePassword(reference.clone())
+        } else {
+            crate::Error::IoError(error)
+        }
+    })?;
+    Ok(contents)
+}
+
 fn archive_entries<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
 ) -> zip::result::ZipResult<Vec<ZipEntryInfo>> {
@@ -270,17 +309,54 @@ fn archive_entries<R: Read + Seek>(
         .collect()
 }
 
+fn validate_archive_password<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    password: Option<&[u8]>,
+    reference: &BagPath<'static>,
+) -> Result<()> {
+    let mut encrypted_index = None;
+    for index in 0..archive.len() {
+        let file = map_zip_error(archive.by_index_raw(index), reference)?;
+        if file.encrypted() {
+            encrypted_index = Some(index);
+            break;
+        }
+    }
+    let Some(index) = encrypted_index else {
+        return Ok(());
+    };
+    let Some(password) = password else {
+        return Err(crate::Error::ArchivePassword(reference.clone()));
+    };
+    let file = map_zip_error(archive.by_index_decrypt(index, password), reference)?;
+    read_zip_file(file, true, reference).map(|_| ())
+}
+
 fn read_archive_entry<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     path: &str,
-) -> zip::result::ZipResult<Option<Vec<u8>>> {
+    password: Option<&[u8]>,
+    reference: &BagPath<'static>,
+) -> Result<Option<(Vec<u8>, bool)>> {
     let Some(index) = find_zip_entry_decoded(archive, path) else {
         return Ok(None);
     };
-    let mut file = archive.by_index(index)?;
-    let mut contents = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut contents)?;
-    Ok(Some(contents))
+    let raw = map_zip_error(archive.by_index_raw(index), reference)?;
+    let encrypted = raw.encrypted();
+    let is_directory = raw.is_dir();
+    drop(raw);
+    if encrypted && password.is_none() {
+        return Err(crate::Error::ArchivePassword(reference.clone()));
+    }
+    let file = if let Some(password) = password {
+        map_zip_error(archive.by_index_decrypt(index, password), reference)?
+    } else {
+        map_zip_error(archive.by_index(index), reference)?
+    };
+    Ok(Some((
+        read_zip_file(file, encrypted, reference)?,
+        is_directory,
+    )))
 }
 
 enum OpenArchive {
@@ -289,23 +365,33 @@ enum OpenArchive {
 }
 
 impl OpenArchive {
-    fn entries(&mut self) -> zip::result::ZipResult<Vec<ZipEntryInfo>> {
+    fn entries(&mut self) -> Result<Vec<ZipEntryInfo>> {
         match self {
-            Self::Disk(archive) => archive_entries(archive),
-            Self::Memory(archive) => archive_entries(archive),
+            Self::Disk(archive) => Ok(archive_entries(archive)?),
+            Self::Memory(archive) => Ok(archive_entries(archive)?),
         }
     }
 
-    fn read_entry(&mut self, path: &str) -> zip::result::ZipResult<Option<Vec<u8>>> {
+    fn validate_password(&mut self, step: &ArchiveStep) -> Result<()> {
         match self {
-            Self::Disk(archive) => read_archive_entry(archive, path),
-            Self::Memory(archive) => read_archive_entry(archive, path),
+            Self::Disk(archive) => {
+                validate_archive_password(archive, step.password.as_deref(), &step.reference)
+            }
+            Self::Memory(archive) => {
+                validate_archive_password(archive, step.password.as_deref(), &step.reference)
+            }
         }
     }
 
-    fn open_nested(&mut self, path: &str) -> Result<OpenArchive> {
-        let contents = self.read_entry(path)?.ok_or(crate::Error::NotFound)?;
-        Ok(Self::Memory(ZipArchive::new(Cursor::new(contents))?))
+    fn read_entry(&mut self, path: &str, step: &ArchiveStep) -> Result<Option<(Vec<u8>, bool)>> {
+        match self {
+            Self::Disk(archive) => {
+                read_archive_entry(archive, path, step.password.as_deref(), &step.reference)
+            }
+            Self::Memory(archive) => {
+                read_archive_entry(archive, path, step.password.as_deref(), &step.reference)
+            }
+        }
     }
 }
 
@@ -315,11 +401,6 @@ fn join_archive_subpath(archive: &str, entry: &str) -> String {
     } else {
         format!("{archive}/:/{entry}")
     }
-}
-
-fn split_archive_path(path: &str) -> (&str, Option<&str>) {
-    path.split_once("/:/")
-        .map_or((path, None), |(outer, subpath)| (outer, Some(subpath)))
 }
 
 fn archive_listing(
@@ -380,38 +461,43 @@ fn archive_listing(
     ArchiveListing { entries }
 }
 
-fn archive_path_parts(path: &BagPath<'_>) -> Result<Vec<String>> {
-    let mut parts = vec![String::new()];
-    for segment in path.segments() {
-        if segment.name() == ":" {
-            parts.push(String::new());
-        } else {
-            let current = parts.last_mut().expect("archive path has an initial part");
-            if !current.is_empty() {
-                current.push('/');
-            }
-            current.push_str(segment.name());
+fn open_target_archive<'a>(
+    root: &std::path::Path,
+    parsed: &'a ParsedFsPath,
+) -> Result<(OpenArchive, &'a ArchiveStep)> {
+    let first = parsed.steps.first().ok_or(crate::Error::NotFound)?;
+    let file = File::open(root.join(&parsed.outer))?;
+    let metadata = file.metadata()?;
+    ensure_zip(&first.reference, metadata.is_dir())?;
+    let mut archive = OpenArchive::Disk(ZipArchive::new(file)?);
+
+    for (index, step) in parsed.steps.iter().enumerate() {
+        archive.validate_password(step)?;
+        if index + 1 == parsed.steps.len() {
+            return Ok((archive, step));
         }
+        let (contents, is_directory) = archive
+            .read_entry(&step.target, step)?
+            .ok_or(crate::Error::NotFound)?;
+        let next = &parsed.steps[index + 1];
+        ensure_zip(&next.reference, is_directory)?;
+        archive = OpenArchive::Memory(ZipArchive::new(Cursor::new(contents))?);
     }
 
-    if parts.len() < 2 || parts[0].is_empty() {
-        return Err(crate::Error::NotFound);
-    }
-    Ok(parts)
+    unreachable!("an archive path always has at least one step")
 }
 
-fn archive_fetch(root: &std::path::Path, parts: Vec<String>) -> Result<ArchiveFetch> {
-    let mut archive = OpenArchive::Disk(ZipArchive::new(File::open(root.join(&parts[0]))?)?);
+fn archive_fetch(root: &std::path::Path, parsed: ParsedFsPath) -> Result<ArchiveFetch> {
+    let (mut archive, step) = open_target_archive(root, &parsed)?;
     let mut archive_subpath = String::new();
-    for nested_archive in &parts[1..parts.len() - 1] {
-        if nested_archive.is_empty() {
-            return Err(crate::Error::NotFound);
-        }
-        archive = archive.open_nested(nested_archive)?;
+    for nested_archive in parsed.steps[..parsed.steps.len() - 1]
+        .iter()
+        .map(|step| &step.target)
+    {
         archive_subpath = join_archive_subpath(&archive_subpath, nested_archive);
     }
 
-    let target = parts.last().expect("archive path has a target");
+    let target = &step.target;
     let entries = archive.entries()?;
     if target.is_empty() {
         return Ok(ArchiveFetch::Directory(archive_listing(
@@ -446,70 +532,29 @@ fn archive_fetch(root: &std::path::Path, parts: Vec<String>) -> Result<ArchiveFe
     })
 }
 
-fn open_disk_zip_entry(file: File, nest: &str) -> Result<NestedOpen> {
-    let archive = match ZipArchive::new(file) {
-        Ok(archive) => archive,
-        Err(_) => return Ok(NestedOpen::InvalidArchive),
-    };
-    let Some(index) = find_zip_entry(&archive, nest) else {
-        return Ok(NestedOpen::NotAFile);
-    };
-    let file = match (ZipFileDiskTryBuilder {
-        archive,
-        file_builder: move |archive| archive.by_index(index),
-    })
-    .try_build()
-    {
-        Ok(file) => file,
-        Err(_) => return Ok(NestedOpen::NotAFile),
-    };
-    let size = file.with_file(|file| file.get_metadata().uncompressed_size);
-    Ok(NestedOpen::File(NestedFile::ZipFileDisk(file), size))
-}
-
-fn open_mem_zip_entry(buffer: Vec<u8>, nest: &str) -> Result<NestedOpen> {
-    let archive = match ZipArchive::new(Cursor::new(buffer)) {
-        Ok(archive) => archive,
-        Err(_) => return Ok(NestedOpen::InvalidArchive),
-    };
-    let Some(index) = find_zip_entry(&archive, nest) else {
-        return Ok(NestedOpen::NotAFile);
-    };
-    let file = match (ZipFileMemTryBuilder {
-        archive,
-        file_builder: move |archive| archive.by_index(index),
-    })
-    .try_build()
-    {
-        Ok(file) => file,
-        Err(_) => return Ok(NestedOpen::NotAFile),
-    };
-    let size = file.with_file(|file| file.get_metadata().uncompressed_size);
-    Ok(NestedOpen::File(NestedFile::ZipFileMem(file), size))
-}
-
 impl FsHandler {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
-    pub async fn open_buffered(&self, path: &str) -> Result<BufferedFile> {
+    pub async fn open_buffered(&self, path: &BagPath<'_>) -> Result<BufferedFile> {
         let root = self.root.clone();
-        let path = path.to_owned();
+        let parsed = parse_fs_path(path)?;
         tokio::task::spawn_blocking(move || {
-            let (outer, subpath) = split_archive_path(&path);
-            let file = File::open(root.join(outer))?;
-            let Some(subpath) = subpath else {
+            if parsed.steps.is_empty() {
+                let file = File::open(root.join(&parsed.outer))?;
                 return Ok(BufferedFile::Disk(BufReader::new(file)));
-            };
-
-            let parts = subpath.split("/:/").collect::<Vec<_>>();
-            let (entry, archive_parts) = parts.split_last().ok_or(crate::Error::NotFound)?;
-            let mut archive = OpenArchive::Disk(ZipArchive::new(file)?);
-            for archive_entry in archive_parts {
-                archive = archive.open_nested(archive_entry)?;
             }
-            let contents = archive.read_entry(entry)?.ok_or(crate::Error::NotFound)?;
+            let (mut archive, step) = open_target_archive(&root, &parsed)?;
+            if step.target.is_empty() {
+                return Err(crate::Error::NotFound);
+            }
+            let (contents, is_directory) = archive
+                .read_entry(&step.target, step)?
+                .ok_or(crate::Error::NotFound)?;
+            if is_directory {
+                return Err(crate::Error::NotFound);
+            }
             Ok(BufferedFile::Memory(Cursor::new(contents)))
         })
         .await?
@@ -517,50 +562,64 @@ impl FsHandler {
 
     pub async fn archive_fetch(&self, path: &BagPath<'_>) -> Result<ArchiveFetch> {
         let root = self.root.clone();
-        let parts = archive_path_parts(path)?;
-        tokio::task::spawn_blocking(move || archive_fetch(&root, parts)).await?
+        let parsed = parse_fs_path(path)?;
+        tokio::task::spawn_blocking(move || archive_fetch(&root, parsed)).await?
     }
 
     fn get_nested(
-        tgt: &str,
-        subpath: Option<&str>,
+        root: &std::path::Path,
+        parsed: ParsedFsPath,
         expected_etag: Option<&str>,
     ) -> Result<FileOpenResult> {
-        let file = std::fs::File::open(tgt)?;
+        let file = File::open(root.join(&parsed.outer))?;
         let metadata = file.metadata()?;
 
         let mtime = metadata.modified()?;
         let length = metadata.len();
+        let subpath = (!parsed.steps.is_empty()).then(|| {
+            parsed
+                .steps
+                .iter()
+                .map(|step| step.target.as_str())
+                .collect::<Vec<_>>()
+                .join("/:/")
+        });
         let etag = Etag {
             mtime,
             length,
-            subpath,
+            subpath: subpath.as_deref(),
         };
         let encoded_etag = etag.hash_string();
+        let (current_mime, current_file, current_file_size) = if parsed.steps.is_empty() {
+            (
+                mime_guess::from_path(&parsed.outer).first_or_octet_stream(),
+                BufferedFile::Disk(BufReader::new(file)),
+                metadata.len(),
+            )
+        } else {
+            drop(file);
+            let (mut archive, step) = open_target_archive(root, &parsed)?;
+            if step.target.is_empty() {
+                return Err(crate::Error::NotFound);
+            }
+            let (contents, is_directory) = archive
+                .read_entry(&step.target, step)?
+                .ok_or(crate::Error::NotFound)?;
+            if is_directory {
+                return Err(crate::Error::NotFound);
+            }
+            let size = contents.len() as u64;
+            (
+                mime_guess::from_path(&step.target).first_or_octet_stream(),
+                BufferedFile::Memory(Cursor::new(contents)),
+                size,
+            )
+        };
+
         if let Some(expected_etag) = expected_etag
             && etag::check_header(&encoded_etag, expected_etag)
         {
             return Ok(FileOpenResult::Unchanged(encoded_etag));
-        }
-
-        let nests = subpath.iter().flat_map(|s| s.split("/:/"));
-        let mut current_mime = mime_guess::from_path(tgt).first_or_octet_stream();
-        let mut current_file = NestedFile::File(file);
-        let mut current_file_size = metadata.size();
-
-        for nest in nests {
-            if current_mime != "application/zip" {
-                return Ok(FileOpenResult::InvalidArchive);
-            }
-
-            let (file, size) = match current_file.open_zip_entry(nest)? {
-                NestedOpen::File(file, size) => (file, size),
-                NestedOpen::InvalidArchive => return Ok(FileOpenResult::InvalidArchive),
-                NestedOpen::NotAFile => return Ok(FileOpenResult::NotAFile),
-            };
-            current_file_size = size;
-            current_mime = mime_guess::from_path(nest).first_or_octet_stream();
-            current_file = file;
         }
 
         Ok(FileOpenResult::File {
@@ -571,36 +630,27 @@ impl FsHandler {
         })
     }
 
-    async fn load_fs(&self, path: &str, header: &HeaderMap) -> Result<Response> {
+    async fn load_fs(&self, path: &BagPath<'_>, header: &HeaderMap) -> Result<Response> {
         // FIXME: path sanitization
         // FIXME: path canonicalization
         // FIXME: empty path segment
 
         // TODO: binary search
 
-        // Part 1: get a Read + Seek handle to the (possibly nested) file.
-        let segs = path.split_once("/:/");
-        let path = segs.map(|(p, _)| p).unwrap_or(path);
-        let subpath = segs.map(|(_, s)| s);
-
-        let tgt = self.root.join(path);
+        let parsed = parse_fs_path(path)?;
+        let filename = path
+            .last()
+            .map(|segment| segment.name().to_owned())
+            .unwrap_or_default();
         let result = tokio::task::spawn_blocking({
-            let tgt = tgt.clone();
-            let subpath = subpath.map(|s| s.to_string());
+            let root = self.root.clone();
             let header_etag = header
                 .get(axum::http::header::IF_NONE_MATCH)
                 .and_then(|v| v.to_str().ok())
                 .map(|e| e.to_string());
-            move || {
-                FsHandler::get_nested(
-                    tgt.to_str().unwrap(),
-                    subpath.as_deref(),
-                    header_etag.as_deref(),
-                )
-            }
+            move || FsHandler::get_nested(&root, parsed, header_etag.as_deref())
         })
-        .await
-        .unwrap();
+        .await?;
 
         let (mime, mut file, size, etag) = match result? {
             Unchanged(etag) => {
@@ -617,13 +667,6 @@ impl FsHandler {
                 size,
                 etag,
             } => (mime, file, size, etag),
-            FileOpenResult::InvalidArchive => {
-                return Ok(Response::builder()
-                    .status(400)
-                    .body("Invalid archive".into())
-                    .unwrap());
-            }
-            FileOpenResult::NotAFile => return Err(crate::Error::NotFound),
         };
 
         // Honor `If-Range`: if present and it does not match the current
@@ -665,10 +708,7 @@ impl FsHandler {
             .header("Cache-Control", "max-age=60, stale-while-revalidate=86400")
             .header(
                 axum::http::header::CONTENT_DISPOSITION,
-                format!(
-                    "inline; filename=\"{}\"",
-                    tgt.file_name().unwrap().to_string_lossy()
-                ),
+                format!("inline; filename=\"{filename}\""),
             )
             .header(axum::http::header::CONTENT_LENGTH, read_len)
             .header(axum::http::header::ACCEPT_RANGES, "bytes");
@@ -681,52 +721,15 @@ impl FsHandler {
         Ok(resp.body(Body::from(body)).unwrap())
     }
 
-    pub async fn handle(&self, path: &str, headers: &HeaderMap) -> Response {
-        match self.load_fs(path, headers).await {
-            Err(crate::Error::NotFound) => {
-                Response::builder()
-                    .status(404)
-                    .body("Not Found".into())
-                    .unwrap()
-            }
-            Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                Response::builder()
-                    .status(404)
-                    .body("Not Found".into())
-                    .unwrap()
-            }
-            Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                Response::builder()
-                    .status(403)
-                    .body("Permission Denied".into())
-                    .unwrap()
-            }
-            Err(crate::Error::IoError(e)) if e.kind() == std::io::ErrorKind::IsADirectory => {
-                Response::builder()
-                    .status(400)
-                    .body("Reading a directory".into())
-                    .unwrap()
-            }
-            Err(crate::Error::RangeUnsatisfiable) => {
-                Response::builder()
-                    .status(416)
-                    .body("Range Unsatisfiable".into())
-                    .unwrap()
-            }
-            Err(e) => {
-                Response::builder()
-                    .status(500)
-                    .body(format!("Internal Server Error: {}", e).into())
-                    .unwrap()
-            }
-            Ok(resp) => resp,
-        }
+    pub async fn handle(&self, path: &BagPath<'_>, headers: &HeaderMap) -> Result<Response> {
+        self.load_fs(path, headers).await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FsHandler, NestedFile, NestedOpen, open_mem_zip_entry};
+    use super::FsHandler;
+    use bag_lib::path::Path;
     use std::io::{Cursor, Read, Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -745,28 +748,38 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
-    fn read_entry(archive: Vec<u8>, path: &str) -> Vec<u8> {
-        let NestedOpen::File(mut file, size) = open_mem_zip_entry(archive, path).unwrap() else {
-            panic!("ZIP entry was not opened");
-        };
-        assert!(matches!(file, NestedFile::ZipFileMem(_)));
-
-        let mut contents = Vec::new();
-        file.read_limited_to_end(size, &mut contents).unwrap();
-        contents
+    fn encrypted_zip_with_file(name: &str, contents: &[u8], password: &str) -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                name,
+                SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, password),
+            )
+            .unwrap();
+        writer.write_all(contents).unwrap();
+        writer.finish().unwrap().into_inner()
     }
 
-    #[test]
-    fn reads_percent_encoded_utf8_entry_name() {
+    #[tokio::test]
+    async fn reads_percent_encoded_utf8_entry_name() {
         let name = "目录/图.jpg";
         let archive = zip_with_file(name, b"utf8 contents");
-        let encoded_name = urlencoding::encode(name);
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("names.zip"), archive).unwrap();
+        let fs = FsHandler::new(directory.path().to_path_buf());
+        let path = format!("names.zip/%3A/{}", urlencoding::encode(name));
+        let mut reader = fs
+            .open_buffered(&Path::try_from(path.as_str()).unwrap())
+            .await
+            .unwrap();
+        let mut contents = Vec::new();
+        reader.read_to_end(&mut contents).unwrap();
 
-        assert_eq!(read_entry(archive, &encoded_name), b"utf8 contents");
+        assert_eq!(contents, b"utf8 contents");
     }
 
-    #[test]
-    fn reads_cp437_entry_name_by_decoded_name() {
+    #[tokio::test]
+    async fn reads_cp437_entry_name_by_decoded_name() {
         let mut archive = zip_with_file("cafX.txt", b"cp437 contents");
         let placeholder = b"cafX.txt";
         let mut replacements = 0;
@@ -779,15 +792,23 @@ mod tests {
         }
         assert_eq!(replacements, 2);
 
-        let encoded_name = urlencoding::encode("café.txt");
-        assert_eq!(read_entry(archive, &encoded_name), b"cp437 contents");
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("names.zip"), archive).unwrap();
+        let fs = FsHandler::new(directory.path().to_path_buf());
+        let path = format!("names.zip/%3A/{}", urlencoding::encode("café.txt"));
+        let mut reader = fs
+            .open_buffered(&Path::try_from(path.as_str()).unwrap())
+            .await
+            .unwrap();
+        let mut contents = Vec::new();
+        reader.read_to_end(&mut contents).unwrap();
+
+        assert_eq!(contents, b"cp437 contents");
     }
 
     #[tokio::test]
     async fn fetches_files_directories_and_marker_opened_nested_archives() {
         use super::ArchiveFetch;
-        use bag_lib::path::Path;
-
         let nested = zip_with_files([("inside.jpg", b"nested".as_slice())]);
         let outer = zip_with_files([
             ("root.jpg", b"root".as_slice()),
@@ -878,11 +899,72 @@ mod tests {
         ));
 
         let mut reader = fs
-            .open_buffered("outer.zip/:/inner.zip/:/inside.jpg")
+            .open_buffered(&Path::try_from("outer.zip/%3A/inner.zip/%3A/inside.jpg").unwrap())
             .await
             .unwrap();
         let mut contents = Vec::new();
         reader.read_to_end(&mut contents).unwrap();
         assert_eq!(contents, b"nested");
+    }
+
+    #[tokio::test]
+    async fn uses_the_password_on_each_archive_marker() {
+        let nested = encrypted_zip_with_file("inside.jpg", b"nested", "inner password");
+        let outer = encrypted_zip_with_file("inner.zip", &nested, "outer password");
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("outer.zip"), outer).unwrap();
+        let fs = FsHandler::new(directory.path().to_path_buf());
+
+        let path = Path::try_from(
+            "outer.zip/%3A,pw=outer%20password/inner.zip/%3A,pw=inner%20password/inside.jpg",
+        )
+        .unwrap();
+        let mut reader = fs.open_buffered(&path).await.unwrap();
+        let mut contents = Vec::new();
+        reader.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"nested");
+
+        let missing = Path::try_from("outer.zip/%3A/inner.zip").unwrap();
+        assert!(matches!(
+            fs.archive_fetch(&missing).await,
+            Err(crate::Error::ArchivePassword(path))
+                if path == Path::try_from("outer.zip").unwrap()
+        ));
+
+        let wrong_outer = Path::try_from("outer.zip/%3A,pw=wrong/inner.zip").unwrap();
+        assert!(matches!(
+            fs.archive_fetch(&wrong_outer).await,
+            Err(crate::Error::ArchivePassword(path))
+                if path == Path::try_from("outer.zip").unwrap()
+        ));
+
+        let wrong_inner =
+            Path::try_from("outer.zip/%3A,pw=outer%20password/inner.zip/%3A,pw=wrong").unwrap();
+        assert!(matches!(
+            fs.archive_fetch(&wrong_inner).await,
+            Err(crate::Error::ArchivePassword(path))
+                if path == Path::try_from("outer.zip/%3A/inner.zip").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn distinguishes_non_archives_from_invalid_zip_files() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("plain.txt"), b"plain").unwrap();
+        std::fs::write(directory.path().join("broken.zip"), b"not a zip").unwrap();
+        std::fs::create_dir(directory.path().join("folder")).unwrap();
+        let fs = FsHandler::new(directory.path().to_path_buf());
+
+        for path in ["plain.txt/%3A", "folder/%3A"] {
+            assert!(matches!(
+                fs.archive_fetch(&Path::try_from(path).unwrap()).await,
+                Err(crate::Error::NotArchive(_))
+            ));
+        }
+        assert!(matches!(
+            fs.archive_fetch(&Path::try_from("broken.zip/%3A").unwrap())
+                .await,
+            Err(crate::Error::Zip(zip::result::ZipError::InvalidArchive(_)))
+        ));
     }
 }

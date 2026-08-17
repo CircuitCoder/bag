@@ -38,8 +38,11 @@ documentation change, apply the same plan-and-confirm rule.
   - `ui.rs`: render response schema (`Layout`, `Component`, galleries, media, etc.).
   - `path.rs`: URL-encoded path segments with comma-separated key/value arguments.
 - `bag-fs`: Filesystem asset delivery and thumbnail generation.
-  - `fs.rs`: Axum responses, ETags, byte ranges, and nested ZIP access using the
-    `/:/` delimiter. It currently buffers response bodies in memory.
+  - `fs.rs`: Axum responses, ETags, byte ranges, and password-aware nested ZIP
+    access using structured `bag_lib::path::Path` values. It currently buffers
+    archive members and response bodies in memory.
+  - `render.rs`: reusable conversion from an `ArchiveListing` into a protocol
+    `Layout`; HTTP routing and redirects remain the caller's responsibility.
   - `thumb.rs`: image and video thumbnails encoded as WebP; video decoding uses
     FFmpeg libraries through `ffmpeg-next`.
 - `bag-serve`: Axum/SQLite backend.
@@ -66,13 +69,17 @@ Generated/local data must not be hand-edited or committed: `target/`,
 
 1. `bag-serve rescan` indexes a configured filesystem root into SQLite. The empty
    relative path is the root record; stored file paths are relative to that root.
+   Archives remain physical file records and are not descended during scanning.
 2. The browser requests a structured render response. The server resolves the
-   extended path through SQLite and serializes `bag-lib` UI components or an action.
+   outer physical path through SQLite, then lists archive contents dynamically when
+   the path contains an archive marker. It serializes `bag-lib` UI components or an
+   action.
 3. The Leptos client renders those components and preloads `Layout.left` and
    `Layout.right` as adjacent panels. Navigation updates browser history; horizontal
    swipe navigation replaces the current history entry.
 4. Media is fetched separately from raw-file or thumbnail endpoints. Thumbnails are
-   generated lazily and cached in the `thumbnails` SQLite table.
+   generated lazily and cached in the `thumbnails` SQLite table by outer physical
+   file ID and a parameter-free archive subpath.
 
 Changing a `bag-lib` wire type normally requires coordinated server serialization
 and frontend rendering changes. Preserve Serde tagging and optional-field behavior
@@ -83,9 +90,10 @@ unless an API compatibility change is explicitly intended.
 The routes built by `bag-serve/src/serve.rs` are:
 
 - `GET /v1/render/{extended_path}`: JSON `LayoutOrAction`.
-- `GET /v1/raw/file/{relative_path}`: raw file content, including ETag and
-  single-range support.
-- `GET /v1/raw/thumbnail/{file_id}`: cached or newly generated WebP thumbnail.
+- `GET /v1/raw/file/{structured_relative_path}`: raw physical or archive-member
+  content, including ETag and single-range support.
+- `GET /v1/raw/thumbnail/{structured_relative_path}`: cached or newly generated
+  WebP thumbnail for the full source path.
 
 The frontend appends `/render/...` and `/raw/...` to its configured backend string,
 so the value entered in browser settings should include the `/v1` prefix (for
@@ -93,9 +101,27 @@ example, `http://host:6102/v1`). CORS is currently permissive.
 
 Extended paths are slash-separated `bag_lib::path::Segment`s. A segment is encoded
 as `name,key=value,key2=value2`; names, keys, and values use URL encoding. Directory
-pagination is stored as `limit` and `offset` arguments on the last segment. The
-empty render path redirects by action to `file`; normal browsable paths begin with
-the `file` segment.
+pagination is stored as `limit` and `offset` arguments on the last segment. Segment
+arguments use a `BTreeMap`, so serialization is canonical and ordered by key. The
+empty render path redirects by action to `file`; normal browsable render paths begin
+with the `file` segment. Raw file and thumbnail routes omit that leading namespace.
+
+A `:` segment means "open the preceding file as an archive"; it is URL-encoded as
+`%3A`. Consequently, the top-level listing for `archive.zip` is
+`archive.zip/%3A`, and nested archives add another marker, for example
+`outer.zip/%3A/inner.zip/%3A`. ZIP passwords belong to the marker as its `pw`
+argument, such as `%3A,pw=secret`, and each nested archive has an independent
+marker/password. `FsHandler::handle`, `open_buffered`, and `archive_fetch` accept
+structured `Path` values so these parameters survive segment-wise traversal.
+`archive_fetch` returns either a directory listing or a file with its parent
+listing; rendering and archive redirects are decided by `bag-serve`.
+
+Thumbnail URLs preserve arguments only on `:` segments. The database lookup strips
+all arguments and stores nested archive paths with the decoded `/:/` delimiter.
+Archive access, including password validation, is checked before returning a cached
+thumbnail. `bag-fs::Error::ArchivePassword` reports a sanitized path to the failing
+archive, while `NotArchive` distinguishes an unsupported path or directory from a
+recognized `.zip` file whose ZIP data is invalid.
 
 `doc/overview.md` describes `/render`, `/action`, and `/asset` conceptually, but the
 implementation currently uses the versioned routes above and has no action POST
@@ -153,11 +179,11 @@ env -u NO_COLOR trunk build --locked index.html
 env -u NO_COLOR trunk serve index.html
 ```
 
-Current baseline: the workspace builds, tests, bundles with Trunk, and passes
-Clippy without denied warnings. `cargo fmt --all -- --check` reports existing
-formatting drift, and Clippy with `-D warnings` reports existing lints. Distinguish
-those baseline issues from warnings or formatting changes introduced by the task;
-do not rewrite unrelated files merely to make a narrow change pass those gates.
+Current baseline: the workspace builds, tests, and bundles with Trunk.
+`cargo fmt --all -- --check` reports existing formatting drift, and Clippy with
+`-D warnings` reports existing lints. Distinguish those baseline issues from
+warnings or formatting changes introduced by the task; do not rewrite unrelated
+files merely to make a narrow change pass those gates.
 
 The server CLI always requires `--root`, including for `upgrade`. A representative
 local sequence is:
@@ -175,8 +201,9 @@ confirming the root. Prefer a dedicated temporary fixture tree and database.
 ## Change And Review Guidance
 
 - Match the existing Rust style and run rustfmt. Avoid unrelated cleanup.
-- Add focused tests for changed pure logic. There are currently no `#[test]`
-  modules, so do not mistake a successful `cargo test` build for behavioral
+- Add focused behavioral tests for changed logic. Existing tests cover path
+  serialization, archive traversal and encryption, thumbnail extraction/cache
+  authorization, and scan behavior, but they are not comprehensive integration
   coverage.
 - For server changes, check success and error status codes, SQLite effects, ETag/
   cache headers, range behavior, and path handling.
@@ -201,11 +228,17 @@ confirming the root. Prefer a dedicated temporary fixture tree and database.
   FIXME items. Raw paths are joined to the configured root. Treat traversal and
   symlink containment as security-sensitive and do not expose the server to
   untrusted networks without addressing the threat model.
-- Archive scanning is not implemented even though raw nested ZIP reading exists.
+- Archive members are intentionally not indexed in `files`; listings are generated
+  dynamically. Large or deeply nested archives may therefore make listing and
+  traversal expensive.
 - Directory filtering/sorting controls, remote actions, and several protocol ideas
   in `doc/overview.md` are not implemented.
 - Raw file reads and nested archive reads currently buffer requested content in
   memory; consider memory impact when reviewing large-media changes.
+- Archive passwords are carried in URL path parameters. Although application error
+  text and render-request logs omit them, URLs may still be retained by browsers,
+  reverse proxies, or external access logs. Use TLS and treat those paths as
+  credentials when changing logging, caching, or URL handling.
 - The watcher is Linux/inotify-specific and documents hardlink, symlink, and event
   race assumptions in `scan.rs`.
 - The browser client assumes Web APIs and local storage calls succeed in many paths;
