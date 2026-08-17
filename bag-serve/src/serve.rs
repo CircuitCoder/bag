@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, path::PathBuf};
+use std::{borrow::Cow, path::PathBuf};
 
 use axum::{
     Json, Router,
@@ -40,7 +40,7 @@ fn is_archive_path(path: &str) -> bool {
 
 fn append_path_segment<'a>(path: &Path<'a>, name: &str) -> Path<'a> {
     let mut segments = path.segments().to_vec();
-    segments.push(Segment(Cow::Owned(name.to_owned()), HashMap::new()));
+    segments.push(Segment(Cow::Owned(name.to_owned()), Default::default()));
     Path(Cow::Owned(segments))
 }
 

@@ -1,10 +1,10 @@
-use std::{borrow::Cow, collections::HashMap, string::FromUtf8Error};
+use std::{borrow::Cow, collections::BTreeMap, string::FromUtf8Error};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Segment<'a>(pub Cow<'a, str>, pub HashMap<Cow<'a, str>, Cow<'a, str>>);
+pub struct Segment<'a>(pub Cow<'a, str>, pub BTreeMap<Cow<'a, str>, Cow<'a, str>>);
 
 impl<'a> Segment<'a> {
-    pub const fn new(name: Cow<'a, str>, args: HashMap<Cow<'a, str>, Cow<'a, str>>) -> Self {
+    pub const fn new(name: Cow<'a, str>, args: BTreeMap<Cow<'a, str>, Cow<'a, str>>) -> Self {
         Segment(name, args)
     }
 }
@@ -39,7 +39,7 @@ impl<'s> TryFrom<&'s str> for Segment<'s> {
         let segment = urlencoding::decode(first).map_err(SegmentParseError::DecodeError)?;
 
         let collected = if let Some((_, next)) = split {
-            let collected: Result<HashMap<Cow<'_, str>, Cow<'_, str>>, Self::Error> = next
+            let collected: Result<BTreeMap<Cow<'_, str>, Cow<'_, str>>, Self::Error> = next
                 .split(",")
                 .map(|arg| {
                     let equal_cnt = arg.matches("=").count();
@@ -54,7 +54,7 @@ impl<'s> TryFrom<&'s str> for Segment<'s> {
                 .collect();
             collected?
         } else {
-            HashMap::new()
+            BTreeMap::new()
         };
 
         Ok(Segment(segment, collected))
@@ -81,6 +81,34 @@ impl<'s> Segment<'s> {
             new_args.remove(key);
         }
         Segment(self.0.clone(), new_args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Path, Segment};
+
+    #[test]
+    fn segment_arguments_have_a_canonical_serialization_order() {
+        let first = Segment::try_from("photo,offset=40,limit=20,password=secret").unwrap();
+        let second = Segment::try_from("photo,password=secret,limit=20,offset=40").unwrap();
+
+        assert_eq!(
+            first.to_string(),
+            "photo,limit=20,offset=40,password=secret"
+        );
+        assert_eq!(first.to_string(), second.to_string());
+    }
+
+    #[test]
+    fn path_updates_preserve_canonical_argument_order() {
+        let path = Path::try_from("file/archive.zip/%3A,password=secret,offset=40").unwrap();
+        let updated = path.with_arg("limit", Some("20"));
+
+        assert_eq!(
+            updated.to_string(),
+            "file/archive.zip/%3A,limit=20,offset=40,password=secret"
+        );
     }
 }
 
