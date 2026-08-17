@@ -183,7 +183,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
     .await?
     .last_insert_rowid();
 
-    // Upsert a file entry. Returns the ID whether the file was actually updated (so if it's a archive, a recursion descent is needed)
+    // Upsert a file entry. Returns the ID and whether its metadata changed.
     // Note that if the file has newer scan id than our current scan, it's not updated at all.
     async fn update_file(
         db: &Database,
@@ -194,6 +194,8 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
         mark_stale: bool,
     ) -> Result<(i64, bool), sqlx::Error> {
         let mut tx = db.as_ref().begin_with("BEGIN IMMEDIATE").await?;
+        // The database models the physical filesystem; archives become browsable at render time.
+        let is_dir = metadata.is_dir();
         let path = &path.to_str().expect("Path is not valid UTF-8");
         let cur = sqlx::query!(
             r#"SELECT id AS "id!", scan_id, mtime AS "mtime: DateTime<Utc>" FROM files WHERE path = ?"#,
@@ -201,8 +203,6 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
         ).fetch_optional(&mut *tx).await?;
         let mtime = DateTime::<Utc>::from(metadata.modified()?);
         let length = metadata.len() as i64;
-        let is_dir = metadata.is_dir();
-
         let Some(cur) = cur else {
             let inserted = sqlx::query!(
                 "INSERT INTO files (path, mtime, length, scan_id, parent, is_directory) VALUES (?, ?, ?, ?, ?, ?)",
@@ -211,7 +211,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
                 length,
                 scan_id,
                 parent,
-                is_dir, // TODO: archive
+                is_dir,
             ).execute(&mut *tx).await?.last_insert_rowid();
             // Parent may be deleted by a newer scan right now
             // Note that the ID field is INTEGER PRIMARY KEY AUTOINCREMENT, so it's never going to be reused
@@ -236,11 +236,11 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
             mtime,
             length,
             parent,
-            is_dir, // TODO: archive
+            is_dir,
             cur.id,
         ).execute(&mut *tx).await?;
 
-        // Delete thumbnail if exists, so next time it gets regenerated.
+        // Invalidate the physical file and every archive descendant thumbnail.
         sqlx::query!("DELETE FROM thumbnails WHERE file_id = ?", cur.id,)
             .execute(&mut *tx)
             .await?;
@@ -593,5 +593,44 @@ pub async fn watch<P1: AsRef<Path>, P2: AsRef<Path>>(
                 rescan_inner(&root, &file, db, false, Some(&*ctx)).await?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rescan;
+    use crate::db::Database;
+    use std::{fs::File, io::Write, path::Path};
+    use zip::{ZipWriter, write::SimpleFileOptions};
+
+    #[tokio::test]
+    async fn archive_is_indexed_as_a_file_without_scanning_its_members() {
+        let root = tempfile::tempdir().unwrap();
+        let database_directory = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("archive.zip");
+        let mut archive = ZipWriter::new(File::create(&archive_path).unwrap());
+        archive
+            .start_file("inside.txt", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"inside the archive").unwrap();
+        archive.finish().unwrap();
+
+        let database_path = database_directory.path().join("scan.sqlite");
+        let database = Database::setup(&format!("sqlite:{}", database_path.display()))
+            .await
+            .unwrap();
+        rescan(root.path(), Path::new(""), &database).await.unwrap();
+
+        let rows = sqlx::query_as::<_, (String, bool)>(
+            "SELECT path, is_directory FROM files ORDER BY path",
+        )
+        .fetch_all(database.as_ref())
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![(String::new(), true), ("archive.zip".to_owned(), false)]
+        );
     }
 }

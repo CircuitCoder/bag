@@ -10,7 +10,7 @@ use axum::{
 };
 use bag_fs::{
     etag::Etag,
-    fs::FsHandler,
+    fs::{ArchiveListing, FsHandler},
     thumb::{extract_thumbnail_img, extract_thumbnail_video},
 };
 use bag_lib::{
@@ -26,27 +26,183 @@ use crate::db::Database;
 #[derive(Clone)]
 struct AppState {
     db: Database,
+    fs: FsHandler,
 }
 
 const DEFAULT_PAGE_SIZE: usize = 100;
 
-pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option<Layout>> {
+fn is_archive_path(path: &str) -> bool {
+    mime_guess::from_path(path).first_or_octet_stream() == "application/zip"
+}
+
+fn split_archive_path(path: &str) -> (&str, Option<&str>) {
+    path.split_once("/:/")
+        .map_or((path, None), |(outer, subpath)| (outer, Some(subpath)))
+}
+
+fn path_without_pagination(path: &Path<'_>) -> String {
+    let path = path.with_arg("offset", None);
+    path.with_arg("limit", None).to_string()
+}
+
+fn archive_parent_render_path(path: &Path<'_>) -> Option<String> {
+    let parent = path.parent()?;
+    if parent.last().is_some_and(|segment| segment.name() == ":") {
+        parent.parent().map(|parent| parent.to_string())
+    } else {
+        Some(parent.to_string())
+    }
+}
+
+fn archive_parent_bare_path(outer: &str, subpath: &str) -> String {
+    let (archive_chain, entry) = subpath
+        .rsplit_once("/:/")
+        .map_or(("", subpath), |(archive, entry)| (archive, entry));
+    if let Some((directory, _)) = entry.rsplit_once('/') {
+        let directory = if archive_chain.is_empty() {
+            directory.to_owned()
+        } else {
+            format!("{archive_chain}/:/{directory}")
+        };
+        format!("{outer}/:/{directory}")
+    } else if archive_chain.is_empty() {
+        outer.to_owned()
+    } else {
+        format!("{outer}/:/{archive_chain}")
+    }
+}
+
+fn archive_child_render_path(parent: &str, parent_is_archive: bool, name: &str) -> String {
+    let encoded_name = urlencoding::encode(name);
+    if parent_is_archive {
+        format!("{parent}/%3A/{encoded_name}")
+    } else {
+        format!("{parent}/{encoded_name}")
+    }
+}
+
+fn archive_directory_layout(
+    file_id: i64,
+    path: &Path<'_>,
+    listing: ArchiveListing,
+    metadata: Vec<Component>,
+) -> Layout {
+    let limit = path
+        .last()
+        .and_then(|segment| segment.arg("limit"))
+        .and_then(|limit| limit.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PAGE_SIZE);
+    let offset = path
+        .last()
+        .and_then(|segment| segment.arg("offset"))
+        .and_then(|offset| offset.parse::<usize>().ok())
+        .unwrap_or(0);
+    let is_start = offset == 0;
+    let is_end = offset.saturating_add(limit) >= listing.entries.len();
+    let parent = path_without_pagination(path);
+    let images = listing
+        .entries
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|entry| GalleryImage {
+            ty: if entry.is_directory {
+                GalleryImageType::Directory
+            } else {
+                GalleryImageType::File
+            },
+            thumbnail: (!entry.is_directory).then(|| {
+                format!(
+                    "thumbnail/{file_id}/{}",
+                    urlencoding::encode(&entry.subpath)
+                )
+            }),
+            action: Some(Action::Navigate {
+                to: archive_child_render_path(&parent, listing.is_archive, &entry.name),
+            }),
+            name: entry.name,
+        })
+        .collect();
+
+    Layout {
+        top: vec![],
+        main: vec![Component::Gallery(Gallery { images })],
+        metadata,
+        left: (!is_start).then(|| {
+            let previous = offset.saturating_sub(limit).to_string();
+            path.with_arg("offset", Some(&previous)).to_string()
+        }),
+        right: (!is_end).then(|| {
+            let next = offset.saturating_add(limit).to_string();
+            path.with_arg("offset", Some(&next)).to_string()
+        }),
+    }
+}
+
+async fn archive_file_layout(
+    fs: &FsHandler,
+    path: &Path<'_>,
+    outer: &str,
+    subpath: &str,
+    bare: &str,
+    metadata: Vec<Component>,
+) -> anyhow::Result<Layout> {
+    let parent_bare = archive_parent_bare_path(outer, subpath);
+    let parent_render = archive_parent_render_path(path).unwrap_or_else(|| "file".to_owned());
+    let listing = fs.list_archive(&parent_bare).await?;
+    let current_name = subpath
+        .rsplit("/:/")
+        .next()
+        .unwrap_or(subpath)
+        .rsplit('/')
+        .next()
+        .unwrap_or(subpath);
+    let files = listing
+        .entries
+        .iter()
+        .filter(|entry| !entry.is_directory)
+        .collect::<Vec<_>>();
+    let current = files.iter().position(|entry| entry.name == current_name);
+    let sibling_path =
+        |name: &str| archive_child_render_path(&parent_render, listing.is_archive, name);
+
+    Ok(Layout {
+        top: vec![],
+        main: vec![Component::Image(Image {
+            resource: format!("file/{bare}"),
+            mime: None,
+        })],
+        metadata,
+        left: current
+            .and_then(|index| index.checked_sub(1))
+            .map(|index| sibling_path(&files[index].name)),
+        right: current
+            .and_then(|index| files.get(index + 1))
+            .map(|entry| sibling_path(&entry.name)),
+    })
+}
+
+pub async fn render_file(
+    db: &Database,
+    fs: &FsHandler,
+    path: Path<'_>,
+) -> anyhow::Result<Option<Layout>> {
     let serialized = path.to_string();
     let bare = path
         .next()
         .map(|e| e.to_bare_string())
         .unwrap_or("".to_owned());
-    let _parent = path.parent();
+    let (outer, archive_subpath) = split_archive_path(&bare);
     let file = sqlx::query!(
         r#"
         SELECT
-          id,
+          id AS "id!",
           mtime as "mtime: DateTime<Utc>",
           is_directory,
           parent
         FROM files WHERE path = ?
     "#,
-        bare
+        outer
     )
     .fetch_optional(db.as_ref())
     .await?;
@@ -63,7 +219,12 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         variant: bag_lib::ui::TextVariant::Title,
         action: None,
     })];
-    if let Some(parent) = path.parent() {
+    let parent = if archive_subpath.is_some() {
+        archive_parent_render_path(&path)
+    } else {
+        path.parent().map(|parent| parent.to_string())
+    };
+    if let Some(parent) = parent {
         metadata.push(Component::Text(Text {
             content: "Path".to_owned(),
             variant: bag_lib::ui::TextVariant::Hint,
@@ -77,10 +238,30 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         metadata.push(Component::Button(Button {
             text: "Go up".to_owned(),
             icon: Some("arrow_back".to_owned()),
-            action: Action::Navigate {
-                to: parent.to_string(),
-            },
+            action: Action::Navigate { to: parent },
         }));
+    }
+
+    if archive_subpath.is_some() || (!file.is_directory && is_archive_path(outer)) {
+        match fs.list_archive(&bare).await {
+            Ok(listing) => {
+                return Ok(Some(archive_directory_layout(
+                    file.id, &path, listing, metadata,
+                )));
+            }
+            Err(bag_fs::Error::NotFound) => {
+                let Some(subpath) = archive_subpath else {
+                    return Ok(None);
+                };
+                if !fs.archive_file_exists(&bare).await? {
+                    return Ok(None);
+                }
+                return archive_file_layout(fs, &path, outer, subpath, &bare, metadata)
+                    .await
+                    .map(Some);
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 
     // Fetch self
@@ -104,7 +285,11 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
         let children = sqlx::query!(
             r#"
             SELECT path, is_directory, id FROM files WHERE parent = ?
-            ORDER BY is_directory DESC, mtime DESC, path DESC
+            ORDER BY
+                is_directory DESC,
+                CASE WHEN substr(lower(path), -4) = '.zip' THEN 1 ELSE 0 END DESC,
+                mtime DESC,
+                path DESC
             LIMIT ? + 1 OFFSET ?
         "#,
             file.id,
@@ -120,25 +305,28 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
 
         let images = children
             .iter()
-            .map(|row| GalleryImage {
-                ty: if row.is_directory {
-                    GalleryImageType::Directory
-                } else {
-                    GalleryImageType::File
-                },
-                thumbnail: if row.is_directory {
-                    None
-                } else {
-                    Some(format!("thumbnail/{}", row.id))
-                },
-                name: row
-                    .path
-                    .rsplit_once("/")
-                    .map(|e| e.1.to_owned())
-                    .unwrap_or(row.path.clone()),
-                action: Some(Action::Navigate {
-                    to: format!("{}/{}", serialized, row.path.rsplit("/").next().unwrap()),
-                }),
+            .map(|row| {
+                let renders_as_directory = row.is_directory || is_archive_path(&row.path);
+                GalleryImage {
+                    ty: if renders_as_directory {
+                        GalleryImageType::Directory
+                    } else {
+                        GalleryImageType::File
+                    },
+                    thumbnail: if renders_as_directory {
+                        None
+                    } else {
+                        Some(format!("thumbnail/{}", row.id))
+                    },
+                    name: row
+                        .path
+                        .rsplit_once("/")
+                        .map(|e| e.1.to_owned())
+                        .unwrap_or(row.path.clone()),
+                    action: Some(Action::Navigate {
+                        to: format!("{}/{}", serialized, row.path.rsplit("/").next().unwrap()),
+                    }),
+                }
             })
             .collect();
 
@@ -174,6 +362,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
                 WHERE parent = ?
                     AND id != ?
                     AND is_directory = FALSE
+                    AND substr(lower(path), -4) != '.zip'
                     AND mtime >= ?
                 ORDER BY mtime ASC, path ASC
                 LIMIT 1
@@ -190,6 +379,7 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
                 WHERE parent = ?
                     AND id != ?
                     AND is_directory = FALSE
+                    AND substr(lower(path), -4) != '.zip'
                     AND mtime <= ?
                 ORDER BY mtime DESC, path DESC
                 LIMIT 1
@@ -215,8 +405,159 @@ pub async fn render_file(db: &Database, path: Path<'_>) -> anyhow::Result<Option
     Ok(Some(result))
 }
 
+async fn thumbnail_response(state: &AppState, id: i64, subpath: String) -> Response<Body> {
+    let response: anyhow::Result<Response<Body>> = async {
+        let existing = sqlx::query!(
+            "SELECT thumbnail, mime FROM thumbnails WHERE file_id = ? AND subpath = ?",
+            id,
+            subpath,
+        )
+        .fetch_optional(state.db.as_ref())
+        .await?;
+        let (thumbnail, mime) = if let Some(existing) = existing {
+            (existing.thumbnail, existing.mime)
+        } else {
+            let file = sqlx::query!("SELECT path, is_directory FROM files WHERE id = ?", id)
+                .fetch_optional(state.db.as_ref())
+                .await?;
+            let Some(file) = file else {
+                return Ok(
+                    (axum::http::StatusCode::NOT_FOUND, "Not Found".to_owned()).into_response()
+                );
+            };
+            if (file.is_directory || is_archive_path(&file.path)) && subpath.is_empty() {
+                return Ok((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "Directories and archives do not have thumbnails".to_owned(),
+                )
+                    .into_response());
+            }
+
+            let media_path = if subpath.is_empty() {
+                file.path.clone()
+            } else {
+                subpath.clone()
+            };
+            let source_path = if subpath.is_empty() {
+                file.path.clone()
+            } else {
+                format!("{}/:/{}", file.path, subpath)
+            };
+            let source = match state.fs.open_buffered(&source_path).await {
+                Ok(source) => source,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to open thumbnail source {} ({}): {}",
+                        file.path,
+                        subpath,
+                        error
+                    );
+                    return Ok((
+                        axum::http::StatusCode::NOT_FOUND,
+                        "Failed to open thumbnail source".to_owned(),
+                    )
+                        .into_response());
+                }
+            };
+            let is_video = mime_guess::from_path(&media_path)
+                .first_or_octet_stream()
+                .type_()
+                .as_str()
+                == "video";
+            let generated = if is_video {
+                extract_thumbnail_video(source, 150).await
+            } else {
+                extract_thumbnail_img(source, 150).await
+            };
+            let thumbnail = match generated {
+                Ok(thumbnail) => thumbnail,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to extract thumbnail for {} ({}): {}",
+                        file.path,
+                        subpath,
+                        error
+                    );
+                    return Ok((
+                        axum::http::StatusCode::NOT_FOUND,
+                        "Failed to extract thumbnail".to_owned(),
+                    )
+                        .into_response());
+                }
+            };
+
+            if let Err(error) = sqlx::query!(
+                r#"
+                INSERT INTO thumbnails (file_id, subpath, thumbnail, mime)
+                VALUES (?, ?, ?, 'image/webp')
+                ON CONFLICT(file_id, subpath) DO UPDATE SET
+                    thumbnail = excluded.thumbnail,
+                    mime = excluded.mime
+                "#,
+                id,
+                subpath,
+                thumbnail,
+            )
+            .execute(state.db.as_ref())
+            .await
+            {
+                tracing::error!(
+                    "Failed to update thumbnail for {} ({}): {}",
+                    id,
+                    subpath,
+                    error
+                );
+            }
+
+            (thumbnail, "image/webp".to_owned())
+        };
+
+        Ok(Response::builder()
+            .header("Content-Type", mime)
+            .header(
+                "Cache-Control",
+                "max-age=3600, stale-while-revalidate=86400",
+            )
+            .body(thumbnail.into())
+            .unwrap())
+    }
+    .await;
+
+    match response {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::error!(
+                "Failed to handle thumbnail request for {} ({}): {}",
+                id,
+                subpath,
+                error
+            );
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal Server Error".to_owned(),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn physical_thumbnail_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response<Body> {
+    thumbnail_response(&state, id, String::new()).await
+}
+
+async fn archive_thumbnail_handler(
+    State(state): State<AppState>,
+    axum::extract::Path((id, subpath)): axum::extract::Path<(i64, String)>,
+) -> Response<Body> {
+    thumbnail_response(&state, id, subpath).await
+}
+
 pub fn build(db: Database, root: PathBuf) -> Router {
     let fs = FsHandler::new(root.clone());
+    let raw_fs = fs.clone();
     let file_handler = Router::new().fallback(
         async move |state: State<AppState>, uri: Uri, headers: HeaderMap| {
             let path = uri.path();
@@ -251,84 +592,9 @@ pub fn build(db: Database, root: PathBuf) -> Router {
                 }
             // FIXME: get length
 
-            fs.handle(path, &headers).await.into_response()
+            raw_fs.handle(path, &headers).await.into_response()
         },
     );
-    let thumbnail_handler = {
-        let db = db.clone();
-        let root = root.clone();
-        async move |axum::extract::Path(id): axum::extract::Path<i64>| -> axum::response::Response {
-            let resp: anyhow::Result<axum::response::Response> = async {
-                let existing = sqlx::query!("SELECT thumbnail, mime FROM thumbnails WHERE file_id = ?", id)
-                    .fetch_optional(db.as_ref())
-                    .await?;
-                let (tb, mime) = if let Some(existing) = existing {
-                    (existing.thumbnail, existing.mime)
-                } else {
-                    let file = sqlx::query!("SELECT path, is_directory FROM files WHERE id = ?", id)
-                        .fetch_optional(db.as_ref())
-                        .await?;
-                    let Some(file) = file else {
-                        return Ok((axum::http::StatusCode::NOT_FOUND, "Not Found".to_string()).into_response());
-                    };
-                    if file.is_directory {
-                        return Ok((axum::http::StatusCode::BAD_REQUEST, "Directories does not have thumbnails".to_string()).into_response());
-                    }
-                    let is_video = mime_guess::from_path(&file.path)
-                        .first_or_octet_stream()
-                        .type_()
-                        .as_str() == "video";
-
-                    let path = root.join(&file.path);
-
-                    let tb = if is_video {
-                        extract_thumbnail_video(path, 150).await
-                    } else {
-                        extract_thumbnail_img(path, 150).await
-                    };
-
-                    let tb = match tb {
-                        Ok(tb) => tb,
-                        Err(e) => {
-                            tracing::error!("Failed to extract thumbnail for file {}: {}", file.path, e);
-                            // TODO: cache this also
-                            return Ok((axum::http::StatusCode::NOT_FOUND, "Failed to extract thumbnail".to_string()).into_response());
-                        }
-                    };
-
-                    // Tries to update thumbnail, squash error
-                    if let Err(e) = sqlx::query!(
-                        "INSERT INTO thumbnails (file_id, thumbnail, mime) VALUES (?, ?, 'image/webp') ON CONFLICT(file_id) DO UPDATE SET thumbnail = excluded.thumbnail, mime = excluded.mime",
-                        id,
-                        tb,
-                    ).execute(db.as_ref()).await {
-                        tracing::error!("Failed to update thumbnail for file {}: {}", id, e);
-                    }
-
-                    (tb, "image/webp".to_owned())
-                };
-
-                Ok(Response::builder()
-                    .header("Content-Type", mime)
-                    .header("Cache-Control", "max-age=3600, stale-while-revalidate=86400")
-                    .body(tb.into())
-                    .unwrap())
-            }.await;
-
-            match resp {
-                Ok(resp) => resp,
-                Err(e) => {
-                    tracing::error!("Failed to handle thumbnail request for file {}: {}", id, e);
-                    (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "Internal Server Error".to_string(),
-                    )
-                        .into_response()
-                }
-            }
-        }
-    };
-
     let render_handler = Router::new()
         .fallback(async move |state: State<AppState>, uri: Uri| {
             // Trim prefixing & suffixing "/"
@@ -353,7 +619,7 @@ pub fn build(db: Database, root: PathBuf) -> Router {
             };
 
             if parsed.first().map(|e| e.name()) == Some("file") {
-                match render_file(&state.db, parsed).await {
+                match render_file(&state.db, &state.fs, parsed).await {
                     Err(e) => (
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                         format!("Internal server error: {}", e),
@@ -375,7 +641,7 @@ pub fn build(db: Database, root: PathBuf) -> Router {
         })
         .layer(tower_http::compression::CompressionLayer::new());
 
-    let state = AppState { db };
+    let state = AppState { db, fs };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -384,9 +650,52 @@ pub fn build(db: Database, root: PathBuf) -> Router {
 
     
     Router::new()
-        .route("/v1/raw/thumbnail/{id}", get(thumbnail_handler))
+        .route("/v1/raw/thumbnail/{id}", get(physical_thumbnail_handler))
+        .route(
+            "/v1/raw/thumbnail/{id}/{subpath}",
+            get(archive_thumbnail_handler),
+        )
         .nest("/v1/raw/file/", file_handler)
         .nest("/v1/render/", render_handler)
         .with_state(state)
         .layer(cors)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        archive_child_render_path, archive_parent_bare_path, archive_parent_render_path,
+        is_archive_path,
+    };
+    use bag_lib::path::Path;
+
+    #[test]
+    fn builds_archive_navigation_paths() {
+        assert!(is_archive_path("gallery.ZIP"));
+        assert!(!is_archive_path("gallery.png"));
+
+        assert_eq!(
+            archive_child_render_path("file/gallery.zip", true, "root image.png"),
+            "file/gallery.zip/%3A/root%20image.png"
+        );
+        assert_eq!(
+            archive_child_render_path("file/gallery.zip/%3A/folder", false, "photo.png"),
+            "file/gallery.zip/%3A/folder/photo.png"
+        );
+
+        assert_eq!(
+            archive_parent_bare_path("gallery.zip", "folder/photo.png"),
+            "gallery.zip/:/folder"
+        );
+        assert_eq!(
+            archive_parent_bare_path("gallery.zip", "inner.zip/:/inside.png"),
+            "gallery.zip/:/inner.zip"
+        );
+
+        let path = Path::try_from("file/gallery.zip/%3A/inner.zip/%3A/inside.png").unwrap();
+        assert_eq!(
+            archive_parent_render_path(&path).as_deref(),
+            Some("file/gallery.zip/%3A/inner.zip")
+        );
+    }
 }

@@ -1,9 +1,8 @@
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format::Pixel;
 use ffmpeg_next::software::scaling::{context::Context as Scaler, flag::Flags};
-use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
-use std::io::Cursor;
-use std::path::PathBuf;
+use image::{DynamicImage, ImageBuffer, ImageFormat, ImageReader, Rgb};
+use std::io::{BufRead, Cursor, Seek, Write};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -16,11 +15,16 @@ pub enum ThumbnailError {
     Join(#[from] tokio::task::JoinError),
     #[error("General error: {0}")]
     General(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
-pub async fn extract_thumbnail_img(img: PathBuf, max_dim: u32) -> Result<Vec<u8>, ThumbnailError> {
+pub async fn extract_thumbnail_img<R>(img: R, max_dim: u32) -> Result<Vec<u8>, ThumbnailError>
+where
+    R: BufRead + Seek + Send + 'static,
+{
     tokio::task::spawn_blocking(move || {
-        let img = image::open(img)?;
+        let img = ImageReader::new(img).with_guessed_format()?.decode()?;
         let mut cursor = Cursor::new(Vec::new());
         img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3)
             .write_to(&mut cursor, ImageFormat::WebP)?;
@@ -32,16 +36,23 @@ pub async fn extract_thumbnail_img(img: PathBuf, max_dim: u32) -> Result<Vec<u8>
 
 /// Extracts a thumbnail from a video file and returns raw encoded bytes.
 /// Outputs WebP format
-pub async fn extract_thumbnail_video(
-    video: PathBuf,
+pub async fn extract_thumbnail_video<R>(
+    mut video: R,
     max_dim: u32,
-) -> Result<Vec<u8>, ThumbnailError> {
+) -> Result<Vec<u8>, ThumbnailError>
+where
+    R: BufRead + Seek + Send + 'static,
+{
     tokio::task::spawn_blocking(move || {
         // Initialize FFmpeg (safe to call multiple times, but required at least once)
         ffmpeg::init()?;
 
+        let mut temporary = tempfile::NamedTempFile::new()?;
+        std::io::copy(&mut video, &mut temporary)?;
+        temporary.flush()?;
+
         // Open the input file
-        let mut ictx = ffmpeg::format::input(&video)?;
+        let mut ictx = ffmpeg::format::input(&temporary.path())?;
 
         // Find the best video stream
         let stream = ictx
@@ -119,4 +130,23 @@ pub async fn extract_thumbnail_video(
         ))
     })
     .await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_thumbnail_img;
+    use image::{DynamicImage, ImageFormat};
+    use std::io::Cursor;
+
+    #[tokio::test]
+    async fn extracts_image_thumbnail_from_buffered_reader() {
+        let mut source = Cursor::new(Vec::new());
+        DynamicImage::new_rgb8(4, 2)
+            .write_to(&mut source, ImageFormat::Png)
+            .unwrap();
+        source.set_position(0);
+
+        let thumbnail = extract_thumbnail_img(source, 2).await.unwrap();
+        assert_eq!(image::guess_format(&thumbnail).unwrap(), ImageFormat::WebP);
+    }
 }

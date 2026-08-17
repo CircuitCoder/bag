@@ -3,8 +3,9 @@
 use axum::{body::Body, http::HeaderMap, response::Response};
 use ouroboros::self_referencing;
 use std::{
+    collections::BTreeMap,
     fs::File,
-    io::{self, Cursor, Read, Seek, SeekFrom},
+    io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom},
     ops::Range,
     os::unix::fs::MetadataExt,
     path::PathBuf,
@@ -80,6 +81,58 @@ fn parse_range(headers: &HeaderMap, length: u64) -> Result<Option<Range<u64>>> {
 #[derive(Clone)]
 pub struct FsHandler {
     root: PathBuf,
+}
+
+pub enum BufferedFile {
+    Disk(BufReader<File>),
+    Memory(Cursor<Vec<u8>>),
+}
+
+impl Read for BufferedFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Disk(reader) => reader.read(buf),
+            Self::Memory(reader) => reader.read(buf),
+        }
+    }
+}
+
+impl BufRead for BufferedFile {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        match self {
+            Self::Disk(reader) => reader.fill_buf(),
+            Self::Memory(reader) => reader.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Self::Disk(reader) => reader.consume(amount),
+            Self::Memory(reader) => reader.consume(amount),
+        }
+    }
+}
+
+impl Seek for BufferedFile {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        match self {
+            Self::Disk(reader) => reader.seek(position),
+            Self::Memory(reader) => reader.seek(position),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveEntry {
+    pub name: String,
+    pub subpath: String,
+    pub is_directory: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveListing {
+    pub entries: Vec<ArchiveEntry>,
+    pub is_archive: bool,
 }
 
 enum FileOpenResult {
@@ -175,9 +228,225 @@ fn discard_exact(reader: &mut impl Read, len: u64) -> io::Result<()> {
 fn find_zip_entry<R: Read + Seek>(archive: &ZipArchive<R>, path: &str) -> Option<usize> {
     let path = urlencoding::decode(path).ok()?;
 
-    archive.index_for_path(path.as_ref()).or_else(|| {
-        (0..archive.len()).find(|&index| archive.name_for_index(index) == Some(path.as_ref()))
+    find_zip_entry_decoded(archive, &path)
+}
+
+fn find_zip_entry_decoded<R: Read + Seek>(archive: &ZipArchive<R>, path: &str) -> Option<usize> {
+    archive
+        .index_for_path(path)
+        .or_else(|| (0..archive.len()).find(|&index| archive.name_for_index(index) == Some(path)))
+}
+
+fn decoded_zip_name(file: &zip::read::ZipFile<'_, impl Read>) -> String {
+    std::str::from_utf8(file.name_raw())
+        .unwrap_or_else(|_| file.name())
+        .to_owned()
+}
+
+#[derive(Debug)]
+struct ZipEntryInfo {
+    name: String,
+    is_directory: bool,
+}
+
+fn archive_entry_info<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    path: &str,
+) -> zip::result::ZipResult<Option<ZipEntryInfo>> {
+    let Some(index) = find_zip_entry_decoded(archive, path) else {
+        return Ok(None);
+    };
+    let file = archive.by_index_raw(index)?;
+    Ok(Some(ZipEntryInfo {
+        name: decoded_zip_name(&file),
+        is_directory: file.is_dir(),
+    }))
+}
+
+fn archive_entries<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> zip::result::ZipResult<Vec<ZipEntryInfo>> {
+    (0..archive.len())
+        .map(|index| {
+            let file = archive.by_index_raw(index)?;
+            Ok(ZipEntryInfo {
+                name: decoded_zip_name(&file),
+                is_directory: file.is_dir(),
+            })
+        })
+        .collect()
+}
+
+fn read_archive_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    path: &str,
+) -> zip::result::ZipResult<Option<Vec<u8>>> {
+    let Some(index) = find_zip_entry_decoded(archive, path) else {
+        return Ok(None);
+    };
+    let mut file = archive.by_index(index)?;
+    let mut contents = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut contents)?;
+    Ok(Some(contents))
+}
+
+enum OpenArchive {
+    Disk(ZipArchive<File>),
+    Memory(ZipArchive<Cursor<Vec<u8>>>),
+}
+
+impl OpenArchive {
+    fn entry_info(&mut self, path: &str) -> zip::result::ZipResult<Option<ZipEntryInfo>> {
+        match self {
+            Self::Disk(archive) => archive_entry_info(archive, path),
+            Self::Memory(archive) => archive_entry_info(archive, path),
+        }
+    }
+
+    fn entries(&mut self) -> zip::result::ZipResult<Vec<ZipEntryInfo>> {
+        match self {
+            Self::Disk(archive) => archive_entries(archive),
+            Self::Memory(archive) => archive_entries(archive),
+        }
+    }
+
+    fn read_entry(&mut self, path: &str) -> zip::result::ZipResult<Option<Vec<u8>>> {
+        match self {
+            Self::Disk(archive) => read_archive_entry(archive, path),
+            Self::Memory(archive) => read_archive_entry(archive, path),
+        }
+    }
+
+    fn open_nested(&mut self, path: &str) -> Result<OpenArchive> {
+        let contents = self.read_entry(path)?.ok_or(crate::Error::NotFound)?;
+        Ok(Self::Memory(ZipArchive::new(Cursor::new(contents))?))
+    }
+}
+
+fn is_zip_path(path: &str) -> bool {
+    mime_guess::from_path(path).first_or_octet_stream() == "application/zip"
+}
+
+fn join_archive_subpath(archive: &str, entry: &str) -> String {
+    if archive.is_empty() {
+        entry.to_owned()
+    } else {
+        format!("{archive}/:/{entry}")
+    }
+}
+
+fn split_archive_path(path: &str) -> (&str, Option<&str>) {
+    path.split_once("/:/")
+        .map_or((path, None), |(outer, subpath)| (outer, Some(subpath)))
+}
+
+fn list_archive(root: &std::path::Path, path: &str) -> Result<ArchiveListing> {
+    let (outer, subpath) = split_archive_path(path);
+    let mut archive = OpenArchive::Disk(ZipArchive::new(File::open(root.join(outer))?)?);
+    let mut archive_subpath = String::new();
+    let mut prefix = "";
+    let mut is_archive = true;
+
+    if let Some(subpath) = subpath {
+        let parts = subpath.split("/:/").collect::<Vec<_>>();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            archive = archive.open_nested(part)?;
+            archive_subpath = join_archive_subpath(&archive_subpath, part);
+        }
+
+        let target = parts.last().copied().ok_or(crate::Error::NotFound)?;
+        let target_info = archive.entry_info(target)?;
+        if target_info
+            .as_ref()
+            .is_some_and(|entry| !entry.is_directory && is_zip_path(&entry.name))
+        {
+            archive = archive.open_nested(target)?;
+            archive_subpath = join_archive_subpath(&archive_subpath, target);
+        } else {
+            let normalized = target.trim_end_matches('/');
+            let child_prefix = format!("{normalized}/");
+            let has_children = archive
+                .entries()?
+                .iter()
+                .any(|entry| entry.name.starts_with(&child_prefix));
+            if !target_info.is_some_and(|entry| entry.is_directory) && !has_children {
+                return Err(crate::Error::NotFound);
+            }
+            prefix = normalized;
+            is_archive = false;
+        }
+    }
+
+    let child_prefix = (!prefix.is_empty()).then(|| format!("{prefix}/"));
+    let mut children = BTreeMap::<String, bool>::new();
+    for entry in archive.entries()? {
+        let name = entry.name.trim_end_matches('/');
+        let remainder = match &child_prefix {
+            Some(child_prefix) => match name.strip_prefix(child_prefix) {
+                Some(remainder) => remainder,
+                None => continue,
+            },
+            None => name,
+        };
+        if remainder.is_empty() {
+            continue;
+        }
+
+        let (name, is_directory) = match remainder.split_once('/') {
+            Some((name, _)) => (name, true),
+            None => (remainder, entry.is_directory || is_zip_path(remainder)),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        children
+            .entry(name.to_owned())
+            .and_modify(|existing| *existing |= is_directory)
+            .or_insert(is_directory);
+    }
+
+    let mut entries = children
+        .into_iter()
+        .map(|(name, is_directory)| {
+            let entry_path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            ArchiveEntry {
+                name,
+                subpath: join_archive_subpath(&archive_subpath, &entry_path),
+                is_directory,
+            }
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .is_directory
+            .cmp(&left.is_directory)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(ArchiveListing {
+        entries,
+        is_archive,
     })
+}
+
+fn archive_file_exists(root: &std::path::Path, path: &str) -> Result<bool> {
+    let (outer, subpath) = split_archive_path(path);
+    let Some(subpath) = subpath else {
+        return Ok(root.join(outer).is_file());
+    };
+    let parts = subpath.split("/:/").collect::<Vec<_>>();
+    let (entry, archive_parts) = parts.split_last().ok_or(crate::Error::NotFound)?;
+    let mut archive = OpenArchive::Disk(ZipArchive::new(File::open(root.join(outer))?)?);
+    for archive_entry in archive_parts {
+        archive = archive.open_nested(archive_entry)?;
+    }
+    Ok(archive
+        .entry_info(entry)?
+        .is_some_and(|entry| !entry.is_directory))
 }
 
 fn open_disk_zip_entry(file: File, nest: &str) -> Result<NestedOpen> {
@@ -225,6 +494,40 @@ fn open_mem_zip_entry(buffer: Vec<u8>, nest: &str) -> Result<NestedOpen> {
 impl FsHandler {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+
+    pub async fn open_buffered(&self, path: &str) -> Result<BufferedFile> {
+        let root = self.root.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let (outer, subpath) = split_archive_path(&path);
+            let file = File::open(root.join(outer))?;
+            let Some(subpath) = subpath else {
+                return Ok(BufferedFile::Disk(BufReader::new(file)));
+            };
+
+            let parts = subpath.split("/:/").collect::<Vec<_>>();
+            let (entry, archive_parts) = parts.split_last().ok_or(crate::Error::NotFound)?;
+            let mut archive = OpenArchive::Disk(ZipArchive::new(file)?);
+            for archive_entry in archive_parts {
+                archive = archive.open_nested(archive_entry)?;
+            }
+            let contents = archive.read_entry(entry)?.ok_or(crate::Error::NotFound)?;
+            Ok(BufferedFile::Memory(Cursor::new(contents)))
+        })
+        .await?
+    }
+
+    pub async fn list_archive(&self, path: &str) -> Result<ArchiveListing> {
+        let root = self.root.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || list_archive(&root, &path)).await?
+    }
+
+    pub async fn archive_file_exists(&self, path: &str) -> Result<bool> {
+        let root = self.root.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || archive_file_exists(&root, &path)).await?
     }
 
     fn get_nested(
@@ -432,16 +735,22 @@ impl FsHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::{NestedFile, NestedOpen, open_mem_zip_entry};
-    use std::io::{Cursor, Write};
+    use super::{FsHandler, NestedFile, NestedOpen, open_mem_zip_entry};
+    use std::io::{Cursor, Read, Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     fn zip_with_file(name: &str, contents: &[u8]) -> Vec<u8> {
+        zip_with_files([(name, contents)])
+    }
+
+    fn zip_with_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Vec<u8> {
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-        writer
-            .start_file(name, SimpleFileOptions::default())
-            .unwrap();
-        writer.write_all(contents).unwrap();
+        for (name, contents) in files {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(contents).unwrap();
+        }
         writer.finish().unwrap().into_inner()
     }
 
@@ -481,5 +790,59 @@ mod tests {
 
         let encoded_name = urlencoding::encode("café.txt");
         assert_eq!(read_entry(archive, &encoded_name), b"cp437 contents");
+    }
+
+    #[tokio::test]
+    async fn lists_implicit_directories_and_nested_archives() {
+        let nested = zip_with_files([("inside.jpg", b"nested".as_slice())]);
+        let outer = zip_with_files([
+            ("root.jpg", b"root".as_slice()),
+            ("folder/photo.jpg", b"photo".as_slice()),
+            ("folder/deeper/item.png", b"item".as_slice()),
+            ("inner.zip", nested.as_slice()),
+        ]);
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("outer.zip"), outer).unwrap();
+        let fs = FsHandler::new(directory.path().to_path_buf());
+
+        let root = fs.list_archive("outer.zip").await.unwrap();
+        assert!(root.is_archive);
+        assert_eq!(
+            root.entries
+                .iter()
+                .map(|entry| (&*entry.name, &*entry.subpath, entry.is_directory))
+                .collect::<Vec<_>>(),
+            vec![
+                ("folder", "folder", true),
+                ("inner.zip", "inner.zip", true),
+                ("root.jpg", "root.jpg", false),
+            ]
+        );
+
+        let folder = fs.list_archive("outer.zip/:/folder").await.unwrap();
+        assert!(!folder.is_archive);
+        assert_eq!(
+            folder
+                .entries
+                .iter()
+                .map(|entry| (&*entry.name, &*entry.subpath, entry.is_directory))
+                .collect::<Vec<_>>(),
+            vec![
+                ("deeper", "folder/deeper", true),
+                ("photo.jpg", "folder/photo.jpg", false),
+            ]
+        );
+
+        let nested = fs.list_archive("outer.zip/:/inner.zip").await.unwrap();
+        assert!(nested.is_archive);
+        assert_eq!(nested.entries[0].subpath, "inner.zip/:/inside.jpg");
+
+        let mut reader = fs
+            .open_buffered("outer.zip/:/inner.zip/:/inside.jpg")
+            .await
+            .unwrap();
+        let mut contents = Vec::new();
+        reader.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"nested");
     }
 }
