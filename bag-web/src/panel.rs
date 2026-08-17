@@ -114,7 +114,11 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }
                 .into_any()
             }
-            bag_lib::ui::Component::Button(Button { text, icon: _, action }) => {
+            bag_lib::ui::Component::Button(Button {
+                text,
+                icon: _,
+                action,
+            }) => {
                 let dispatch = *dispatch;
                 let text = text.clone();
                 let action = action.clone();
@@ -210,16 +214,8 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             }.into_any()
         }
         Some(Ok(LayoutOrAction::Layout(layout))) => {
-            let main = layout
-                .main
-                .iter()
-                .map(&render)
-                .collect::<Vec<_>>();
-            let metadata = layout
-                .metadata
-                .iter()
-                .map(&render)
-                .collect::<Vec<_>>();
+            let main = layout.main.iter().map(&render).collect::<Vec<_>>();
+            let metadata = layout.metadata.iter().map(&render).collect::<Vec<_>>();
             let no_metadata =
                 metadata.is_empty() && layout.left.is_none() && layout.right.is_none();
             view! {
@@ -241,7 +237,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         Some(Ok(LayoutOrAction::Action(_))) => {
             let _: () = view! {};
             ().into_any()
-        },
+        }
     };
 
     view! {

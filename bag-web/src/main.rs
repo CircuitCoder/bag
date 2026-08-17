@@ -452,10 +452,7 @@ fn App() -> AnyView {
     web_sys::console::log_1(&"App mounted".into());
     let storage = local_storage();
     let backend = storage.get_item(BACKEND_KEY).unwrap();
-    let recent_backends = RwSignal::new(init_recent_backends(
-        &storage,
-        backend.as_deref(),
-    ));
+    let recent_backends = RwSignal::new(init_recent_backends(&storage, backend.as_deref()));
     let backend_input = NodeRef::<Input>::new();
 
     let render_backend_fragment = move || {

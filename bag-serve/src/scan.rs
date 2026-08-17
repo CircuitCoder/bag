@@ -132,11 +132,12 @@ impl WatchContext {
             return Ok(false);
         };
         if let Err(e) = self.handle.remove(wd)
-            && e.kind() != std::io::ErrorKind::InvalidInput {
-                return Err(e.into());
-            }
-            // EINVAL means the watch descriptor is already removed (maybe automatically)
-            // which should be fine
+            && e.kind() != std::io::ErrorKind::InvalidInput
+        {
+            return Err(e.into());
+        }
+        // EINVAL means the watch descriptor is already removed (maybe automatically)
+        // which should be fine
         // Don't modify rev yet
         Ok(true)
     }
@@ -350,26 +351,20 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
                 bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
             }
 
-            let (cid, _) = match update_file(
-                db,
-                child_path.as_path(),
-                &metadata,
-                Some(id),
-                scan_id,
-                true,
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(sqlx::Error::Database(e))
-                    if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation =>
+            let (cid, _) =
+                match update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true)
+                    .await
                 {
-                    // Some newer scan has delete the parent
-                    // just return
-                    return Ok(());
-                }
-                Err(e) => return Err(e.into()),
-            };
+                    Ok(r) => r,
+                    Err(sqlx::Error::Database(e))
+                        if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation =>
+                    {
+                        // Some newer scan has delete the parent
+                        // just return
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                };
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
