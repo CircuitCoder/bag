@@ -172,12 +172,20 @@ fn discard_exact(reader: &mut impl Read, len: u64) -> io::Result<()> {
     }
 }
 
+fn find_zip_entry<R: Read + Seek>(archive: &ZipArchive<R>, path: &str) -> Option<usize> {
+    let path = urlencoding::decode(path).ok()?;
+
+    archive.index_for_path(path.as_ref()).or_else(|| {
+        (0..archive.len()).find(|&index| archive.name_for_index(index) == Some(path.as_ref()))
+    })
+}
+
 fn open_disk_zip_entry(file: File, nest: &str) -> Result<NestedOpen> {
     let archive = match ZipArchive::new(file) {
         Ok(archive) => archive,
         Err(_) => return Ok(NestedOpen::InvalidArchive),
     };
-    let Some(index) = archive.index_for_path(nest) else {
+    let Some(index) = find_zip_entry(&archive, nest) else {
         return Ok(NestedOpen::NotAFile);
     };
     let file = match (ZipFileDiskTryBuilder {
@@ -198,7 +206,7 @@ fn open_mem_zip_entry(buffer: Vec<u8>, nest: &str) -> Result<NestedOpen> {
         Ok(archive) => archive,
         Err(_) => return Ok(NestedOpen::InvalidArchive),
     };
-    let Some(index) = archive.index_for_path(nest) else {
+    let Some(index) = find_zip_entry(&archive, nest) else {
         return Ok(NestedOpen::NotAFile);
     };
     let file = match (ZipFileMemTryBuilder {
@@ -419,5 +427,59 @@ impl FsHandler {
             }
             Ok(resp) => resp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NestedFile, NestedOpen, open_mem_zip_entry};
+    use std::io::{Cursor, Write};
+    use zip::{ZipWriter, write::SimpleFileOptions};
+
+    fn zip_with_file(name: &str, contents: &[u8]) -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(contents).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn read_entry(archive: Vec<u8>, path: &str) -> Vec<u8> {
+        let NestedOpen::File(mut file, size) = open_mem_zip_entry(archive, path).unwrap() else {
+            panic!("ZIP entry was not opened");
+        };
+        assert!(matches!(file, NestedFile::ZipFileMem(_)));
+
+        let mut contents = Vec::new();
+        file.read_limited_to_end(size, &mut contents).unwrap();
+        contents
+    }
+
+    #[test]
+    fn reads_percent_encoded_utf8_entry_name() {
+        let name = "目录/图.jpg";
+        let archive = zip_with_file(name, b"utf8 contents");
+        let encoded_name = urlencoding::encode(name);
+
+        assert_eq!(read_entry(archive, &encoded_name), b"utf8 contents");
+    }
+
+    #[test]
+    fn reads_cp437_entry_name_by_decoded_name() {
+        let mut archive = zip_with_file("cafX.txt", b"cp437 contents");
+        let placeholder = b"cafX.txt";
+        let mut replacements = 0;
+
+        for offset in 0..=archive.len() - placeholder.len() {
+            if archive[offset..].starts_with(placeholder) {
+                archive[offset + 3] = 0x82;
+                replacements += 1;
+            }
+        }
+        assert_eq!(replacements, 2);
+
+        let encoded_name = urlencoding::encode("café.txt");
+        assert_eq!(read_entry(archive, &encoded_name), b"cp437 contents");
     }
 }
