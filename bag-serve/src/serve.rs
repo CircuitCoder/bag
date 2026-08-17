@@ -1,4 +1,4 @@
-use std::{borrow::Cow, path::PathBuf};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -30,6 +30,34 @@ use crate::db::Database;
 struct AppState {
     db: Database,
     fs: FsHandler,
+    thumbnail_queue: ThumbnailQueue,
+}
+
+#[derive(Clone)]
+struct ThumbnailQueue {
+    semaphore: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl ThumbnailQueue {
+    fn new(concurrency: usize) -> Self {
+        Self {
+            semaphore: (concurrency != 0)
+                .then(|| Arc::new(tokio::sync::Semaphore::new(concurrency))),
+        }
+    }
+
+    async fn acquire(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        match &self.semaphore {
+            Some(semaphore) => Some(
+                semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("thumbnail queue semaphore is never closed"),
+            ),
+            None => None,
+        }
+    }
 }
 
 const DEFAULT_PAGE_SIZE: usize = 100;
@@ -499,16 +527,32 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
             }
         }
 
-        let existing = sqlx::query!(
-            "SELECT thumbnail, mime FROM thumbnails WHERE file_id = ? AND subpath = ?",
-            file.id,
-            lookup.subpath,
-        )
-        .fetch_optional(state.db.as_ref())
-        .await?;
+        async fn cached_thumbnail(
+            db: &Database,
+            file_id: i64,
+            subpath: &str,
+        ) -> Result<Option<(Vec<u8>, String)>, sqlx::Error> {
+            Ok(sqlx::query!(
+                "SELECT thumbnail, mime FROM thumbnails WHERE file_id = ? AND subpath = ?",
+                file_id,
+                subpath,
+            )
+            .fetch_optional(db.as_ref())
+            .await?
+            .map(|thumbnail| (thumbnail.thumbnail, thumbnail.mime)))
+        }
+
+        let existing = cached_thumbnail(&state.db, file.id, &lookup.subpath).await?;
         let (thumbnail, mime) = if let Some(existing) = existing {
-            (existing.thumbnail, existing.mime)
+            existing
         } else {
+            let _permit = state.thumbnail_queue.acquire().await;
+
+            // A request ahead of us in the queue may have populated the cache.
+            if let Some(existing) = cached_thumbnail(&state.db, file.id, &lookup.subpath).await? {
+                return Ok(thumbnail_body(existing.0, existing.1));
+            }
+
             let source = match state.fs.open_buffered(&parsed).await {
                 Ok(source) => source,
                 Err(error) => {
@@ -574,14 +618,7 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
             (thumbnail, "image/webp".to_owned())
         };
 
-        Ok(Response::builder()
-            .header("Content-Type", mime)
-            .header(
-                "Cache-Control",
-                "max-age=3600, stale-while-revalidate=86400",
-            )
-            .body(thumbnail.into())
-            .unwrap())
+        Ok(thumbnail_body(thumbnail, mime))
     }
     .await;
 
@@ -603,7 +640,18 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
     }
 }
 
-pub fn build(db: Database, root: PathBuf) -> Router {
+fn thumbnail_body(thumbnail: Vec<u8>, mime: String) -> Response<Body> {
+    Response::builder()
+        .header("Content-Type", mime)
+        .header(
+            "Cache-Control",
+            "max-age=3600, stale-while-revalidate=86400",
+        )
+        .body(thumbnail.into())
+        .unwrap()
+}
+
+pub fn build(db: Database, root: PathBuf, thumbnail_concurrency: usize) -> Router {
     let fs = FsHandler::new(root.clone());
     let raw_fs = fs.clone();
     let file_handler = Router::new().fallback(
@@ -722,7 +770,11 @@ pub fn build(db: Database, root: PathBuf) -> Router {
         })
         .layer(tower_http::compression::CompressionLayer::new());
 
-    let state = AppState { db, fs };
+    let state = AppState {
+        db,
+        fs,
+        thumbnail_queue: ThumbnailQueue::new(thumbnail_concurrency),
+    };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -740,8 +792,8 @@ pub fn build(db: Database, root: PathBuf) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, archive_redirect, fs_error_response, is_archive_path, thumbnail_lookup,
-        thumbnail_resource, thumbnail_response,
+        AppState, ThumbnailQueue, archive_redirect, fs_error_response, is_archive_path,
+        thumbnail_lookup, thumbnail_resource, thumbnail_response,
     };
     use crate::db::Database;
     use bag_fs::fs::FsHandler;
@@ -844,6 +896,7 @@ mod tests {
         let state = AppState {
             db: database,
             fs: FsHandler::new(directory.path().to_path_buf()),
+            thumbnail_queue: ThumbnailQueue::new(1),
         };
 
         let missing = thumbnail_response(&state, "outer.zip/%3A/photo.jpg").await;
@@ -852,5 +905,27 @@ mod tests {
         assert_eq!(wrong.status(), axum::http::StatusCode::UNAUTHORIZED);
         let correct = thumbnail_response(&state, "outer.zip/%3A,pw=secret/photo.jpg").await;
         assert_eq!(correct.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn thumbnail_queue_limits_concurrent_work() {
+        let queue = ThumbnailQueue::new(1);
+        let first = queue.acquire().await;
+        let waiting_queue = queue.clone();
+        let second = tokio::spawn(async move { waiting_queue.acquire().await });
+
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished());
+
+        drop(first);
+        assert!(second.await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn zero_thumbnail_concurrency_is_unlimited() {
+        let queue = ThumbnailQueue::new(0);
+
+        assert!(queue.acquire().await.is_none());
+        assert!(queue.acquire().await.is_none());
     }
 }
