@@ -7,6 +7,7 @@ edition = "2024"
 thiserror = "2.0.18"
 tokio = { workspace = true, features = ["fs"] }
 axum = { workspace = true }
+bag-lib = { path = "../bag-lib" }
 mime_guess = "2.0.5"
 tokio-util = { version = "0.7.18", features = ["io"] }
 image = "0.25.10"

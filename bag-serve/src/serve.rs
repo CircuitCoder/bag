@@ -10,7 +10,8 @@ use axum::{
 };
 use bag_fs::{
     etag::Etag,
-    fs::{ArchiveListing, FsHandler},
+    fs::FsHandler,
+    render::{ArchiveRenderParams, archive_parent_path},
     thumb::{extract_thumbnail_img, extract_thumbnail_video},
 };
 use bag_lib::{
@@ -38,148 +39,6 @@ fn is_archive_path(path: &str) -> bool {
 fn split_archive_path(path: &str) -> (&str, Option<&str>) {
     path.split_once("/:/")
         .map_or((path, None), |(outer, subpath)| (outer, Some(subpath)))
-}
-
-fn path_without_pagination(path: &Path<'_>) -> String {
-    let path = path.with_arg("offset", None);
-    path.with_arg("limit", None).to_string()
-}
-
-fn archive_parent_render_path(path: &Path<'_>) -> Option<String> {
-    let parent = path.parent()?;
-    if parent.last().is_some_and(|segment| segment.name() == ":") {
-        parent.parent().map(|parent| parent.to_string())
-    } else {
-        Some(parent.to_string())
-    }
-}
-
-fn archive_parent_bare_path(outer: &str, subpath: &str) -> String {
-    let (archive_chain, entry) = subpath
-        .rsplit_once("/:/")
-        .map_or(("", subpath), |(archive, entry)| (archive, entry));
-    if let Some((directory, _)) = entry.rsplit_once('/') {
-        let directory = if archive_chain.is_empty() {
-            directory.to_owned()
-        } else {
-            format!("{archive_chain}/:/{directory}")
-        };
-        format!("{outer}/:/{directory}")
-    } else if archive_chain.is_empty() {
-        outer.to_owned()
-    } else {
-        format!("{outer}/:/{archive_chain}")
-    }
-}
-
-fn archive_child_render_path(parent: &str, parent_is_archive: bool, name: &str) -> String {
-    let encoded_name = urlencoding::encode(name);
-    if parent_is_archive {
-        format!("{parent}/%3A/{encoded_name}")
-    } else {
-        format!("{parent}/{encoded_name}")
-    }
-}
-
-fn archive_directory_layout(
-    file_id: i64,
-    path: &Path<'_>,
-    listing: ArchiveListing,
-    metadata: Vec<Component>,
-) -> Layout {
-    let limit = path
-        .last()
-        .and_then(|segment| segment.arg("limit"))
-        .and_then(|limit| limit.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_PAGE_SIZE);
-    let offset = path
-        .last()
-        .and_then(|segment| segment.arg("offset"))
-        .and_then(|offset| offset.parse::<usize>().ok())
-        .unwrap_or(0);
-    let is_start = offset == 0;
-    let is_end = offset.saturating_add(limit) >= listing.entries.len();
-    let parent = path_without_pagination(path);
-    let images = listing
-        .entries
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|entry| GalleryImage {
-            ty: if entry.is_directory {
-                GalleryImageType::Directory
-            } else {
-                GalleryImageType::File
-            },
-            thumbnail: (!entry.is_directory).then(|| {
-                format!(
-                    "thumbnail/{file_id}/{}",
-                    urlencoding::encode(&entry.subpath)
-                )
-            }),
-            action: Some(Action::Navigate {
-                to: archive_child_render_path(&parent, listing.is_archive, &entry.name),
-            }),
-            name: entry.name,
-        })
-        .collect();
-
-    Layout {
-        top: vec![],
-        main: vec![Component::Gallery(Gallery { images })],
-        metadata,
-        left: (!is_start).then(|| {
-            let previous = offset.saturating_sub(limit).to_string();
-            path.with_arg("offset", Some(&previous)).to_string()
-        }),
-        right: (!is_end).then(|| {
-            let next = offset.saturating_add(limit).to_string();
-            path.with_arg("offset", Some(&next)).to_string()
-        }),
-    }
-}
-
-async fn archive_file_layout(
-    fs: &FsHandler,
-    path: &Path<'_>,
-    outer: &str,
-    subpath: &str,
-    bare: &str,
-    metadata: Vec<Component>,
-) -> anyhow::Result<Layout> {
-    let parent_bare = archive_parent_bare_path(outer, subpath);
-    let parent_render = archive_parent_render_path(path).unwrap_or_else(|| "file".to_owned());
-    let listing = fs.list_archive(&parent_bare).await?;
-    let current_name = subpath
-        .rsplit("/:/")
-        .next()
-        .unwrap_or(subpath)
-        .rsplit('/')
-        .next()
-        .unwrap_or(subpath);
-    let files = listing
-        .entries
-        .iter()
-        .filter(|entry| !entry.is_directory)
-        .collect::<Vec<_>>();
-    let current = files.iter().position(|entry| entry.name == current_name);
-    let sibling_path =
-        |name: &str| archive_child_render_path(&parent_render, listing.is_archive, name);
-
-    Ok(Layout {
-        top: vec![],
-        main: vec![Component::Image(Image {
-            resource: format!("file/{bare}"),
-            mime: None,
-        })],
-        metadata,
-        left: current
-            .and_then(|index| index.checked_sub(1))
-            .map(|index| sibling_path(&files[index].name)),
-        right: current
-            .and_then(|index| files.get(index + 1))
-            .map(|entry| sibling_path(&entry.name)),
-    })
 }
 
 pub async fn render_file(
@@ -220,7 +79,7 @@ pub async fn render_file(
         action: None,
     })];
     let parent = if archive_subpath.is_some() {
-        archive_parent_render_path(&path)
+        archive_parent_path(&path).map(|parent| parent.to_string())
     } else {
         path.parent().map(|parent| parent.to_string())
     };
@@ -243,23 +102,28 @@ pub async fn render_file(
     }
 
     if archive_subpath.is_some() || (!file.is_directory && is_archive_path(outer)) {
-        match fs.list_archive(&bare).await {
-            Ok(listing) => {
-                return Ok(Some(archive_directory_layout(
-                    file.id, &path, listing, metadata,
-                )));
+        let thumbnail = |path: Path<'_>| {
+            let bare = path.next()?.to_bare_string();
+            let (_, subpath) = split_archive_path(&bare);
+            Some(format!(
+                "thumbnail/{}/{}",
+                file.id,
+                urlencoding::encode(subpath?)
+            ))
+        };
+        match fs
+            .render_archive(ArchiveRenderParams {
+                path,
+                default_page_size: DEFAULT_PAGE_SIZE,
+                thumbnail,
+            })
+            .await
+        {
+            Ok(mut layout) => {
+                layout.metadata = metadata;
+                return Ok(Some(layout));
             }
-            Err(bag_fs::Error::NotFound) => {
-                let Some(subpath) = archive_subpath else {
-                    return Ok(None);
-                };
-                if !fs.archive_file_exists(&bare).await? {
-                    return Ok(None);
-                }
-                return archive_file_layout(fs, &path, outer, subpath, &bare, metadata)
-                    .await
-                    .map(Some);
-            }
+            Err(bag_fs::Error::NotFound) => return Ok(None),
             Err(error) => return Err(error.into()),
         }
     }
@@ -663,39 +527,11 @@ pub fn build(db: Database, root: PathBuf) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        archive_child_render_path, archive_parent_bare_path, archive_parent_render_path,
-        is_archive_path,
-    };
-    use bag_lib::path::Path;
+    use super::is_archive_path;
 
     #[test]
-    fn builds_archive_navigation_paths() {
+    fn detects_archive_paths() {
         assert!(is_archive_path("gallery.ZIP"));
         assert!(!is_archive_path("gallery.png"));
-
-        assert_eq!(
-            archive_child_render_path("file/gallery.zip", true, "root image.png"),
-            "file/gallery.zip/%3A/root%20image.png"
-        );
-        assert_eq!(
-            archive_child_render_path("file/gallery.zip/%3A/folder", false, "photo.png"),
-            "file/gallery.zip/%3A/folder/photo.png"
-        );
-
-        assert_eq!(
-            archive_parent_bare_path("gallery.zip", "folder/photo.png"),
-            "gallery.zip/:/folder"
-        );
-        assert_eq!(
-            archive_parent_bare_path("gallery.zip", "inner.zip/:/inside.png"),
-            "gallery.zip/:/inner.zip"
-        );
-
-        let path = Path::try_from("file/gallery.zip/%3A/inner.zip/%3A/inside.png").unwrap();
-        assert_eq!(
-            archive_parent_render_path(&path).as_deref(),
-            Some("file/gallery.zip/%3A/inner.zip")
-        );
     }
 }

@@ -372,6 +372,7 @@ name = "bag-fs"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bag-lib",
  "ffmpeg-next",
  "image",
  "mime_guess",

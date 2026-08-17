@@ -2,6 +2,7 @@ use thiserror::Error;
 
 pub mod etag;
 pub mod fs;
+pub mod render;
 pub mod thumb;
 
 #[derive(Error, Debug)]
