@@ -179,11 +179,8 @@ env -u NO_COLOR trunk build --locked index.html
 env -u NO_COLOR trunk serve index.html
 ```
 
-Current baseline: the workspace builds, tests, and bundles with Trunk.
-`cargo fmt --all -- --check` reports existing formatting drift, and Clippy with
-`-D warnings` reports existing lints. Distinguish those baseline issues from
-warnings or formatting changes introduced by the task; do not rewrite unrelated
-files merely to make a narrow change pass those gates.
+Current baseline: the workspace builds, tests, and bundles with Trunk, and both
+`cargo fmt --all -- --check` and Clippy with `-D warnings` pass.
 
 The server CLI always requires `--root`, including for `upgrade`. A representative
 local sequence is:
@@ -200,7 +197,14 @@ confirming the root. Prefer a dedicated temporary fixture tree and database.
 
 ## Change And Review Guidance
 
-- Match the existing Rust style and run rustfmt. Avoid unrelated cleanup.
+- For code changes, run rustfmt and Clippy and leave no formatting or Clippy
+  problems. If a problem is unreasonable to fix or demonstrably preexisting, do
+  not silently suppress it or expand the task into unrelated cleanup; notify the
+  user and explain the exception.
+- For review tasks, run the check-only formatting and Clippy commands to verify the
+  reviewed state, but do not modify code to resolve their findings. If either check
+  reports a problem, report it and ask the user for concrete reasons before
+  treating it as an acceptable exception.
 - Add focused behavioral tests for changed logic. Existing tests cover path
   serialization, archive traversal and encryption, thumbnail extraction/cache
   authorization, and scan behavior, but they are not comprehensive integration

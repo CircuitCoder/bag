@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use web_sys::{
     Response,
@@ -25,12 +25,12 @@ impl From<serde_json::Error> for FetchError {
     }
 }
 
-impl ToString for FetchError {
-    fn to_string(&self) -> String {
+impl fmt::Display for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FetchError::BrowserError(err) => format!("Browser error: {:?}", err),
-            FetchError::HTTPFailure(code, text) => format!("HTTP code {}: {}", code, text),
-            FetchError::JsonError(err) => format!("JSON parsing error: {}", err),
+            FetchError::BrowserError(err) => write!(f, "Browser error: {err:?}"),
+            FetchError::HTTPFailure(code, text) => write!(f, "HTTP code {code}: {text}"),
+            FetchError::JsonError(err) => write!(f, "JSON parsing error: {err}"),
         }
     }
 }

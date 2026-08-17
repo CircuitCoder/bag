@@ -20,6 +20,7 @@ mod util;
 
 const BACKEND_KEY: &str = "backend";
 const RECENT_BACKENDS_KEY: &str = "recentBackends";
+type AnimationFrameHandler = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
 fn local_storage() -> web_sys::Storage {
     web_sys::window().unwrap().local_storage().unwrap().unwrap()
@@ -574,7 +575,7 @@ fn App() -> AnyView {
     let touching: RwSignal<SwipeState> = RwSignal::new(SwipeState::default());
 
     // Animation frame loop
-    let frame_handler: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let frame_handler: AnimationFrameHandler = Rc::new(RefCell::new(None));
     let frame_handler_clone = frame_handler.clone();
     *frame_handler.borrow_mut() = Some(Closure::new(move || {
         util::request_animation_frame(frame_handler_clone.borrow().as_ref().unwrap());

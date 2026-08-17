@@ -159,7 +159,7 @@ mod tests {
             ArchiveRenderParams {
                 path: Path::try_from("file/gallery.zip/%3A,pw=secret,limit=2,offset=0").unwrap(),
                 default_page_size: 100,
-                thumbnail: |path: Path<'_>| Some(format!("thumb/{}", path.to_string())),
+                thumbnail: |path: Path<'_>| Some(format!("thumb/{path}")),
             },
             ArchiveListing {
                 entries: vec![

@@ -159,7 +159,6 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         }
     }
     let render = {
-        let dispatch = dispatch;
         let backend = backend.clone();
         move |comp: &bag_lib::ui::Component| render_static(&dispatch, &backend, comp)
     };
@@ -234,10 +233,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             }
             .into_any()
         }
-        Some(Ok(LayoutOrAction::Action(_))) => {
-            let _: () = view! {};
-            ().into_any()
-        }
+        Some(Ok(LayoutOrAction::Action(_))) => ().into_any(),
     };
 
     view! {

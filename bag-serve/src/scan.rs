@@ -110,9 +110,11 @@ impl WatchContext {
         // Remove all path mapping to wd in rev,
         // so that we'll not be errornously removed
         let rev = self.rev.entry(wd.clone()).or_default();
-        let last = rev.back();
-        if last.is_some() && self.fwd.get(last.unwrap()) == Some(&wd) && last.unwrap() != path {
-            self.fwd.remove(last.unwrap());
+        if let Some(last) = rev.back()
+            && self.fwd.get(last) == Some(&wd)
+            && last != path
+        {
+            self.fwd.remove(last);
         }
 
         self.fwd.insert(path.to_path_buf(), wd.clone());
@@ -321,23 +323,30 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
         };
     }
 
-    async fn walk(
-        db: &Database,
-        root: &Path,
+    struct WalkContext<'a> {
+        db: &'a Database,
+        root: &'a Path,
         scan_id: i64,
+        bar: Option<&'a indicatif::ProgressBar>,
+        watches: Option<&'a tokio::sync::Mutex<WatchContext>>,
+    }
+
+    async fn walk(
+        context: &WalkContext<'_>,
         base: &Path,
         id: i64,
         counter: &mut i64,
-        bar: Option<&indicatif::ProgressBar>,
-        watches: Option<&tokio::sync::Mutex<WatchContext>>,
     ) -> anyhow::Result<()> {
         // Before reading dir, add watches
         // TODO: same as below: we may've been deleted in FS
-        if let Some(watches) = watches {
-            watches.lock().await.add(root, base, inotify_mask())?;
+        if let Some(watches) = context.watches {
+            watches
+                .lock()
+                .await
+                .add(context.root, base, inotify_mask())?;
         }
 
-        let joined = root.join(base);
+        let joined = context.root.join(base);
         // TODO: we may've been deleted in FS
         let mut entries = ignore_missing!(tokio::fs::read_dir(joined).await, { return Ok(()) });
         while let Some(entry) = entries.next_entry().await? {
@@ -346,39 +355,35 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
             let child_path = base.join(name);
             let metadata = ignore_missing!(entry.metadata().await, { continue });
 
-            if let Some(bar) = bar {
+            if let Some(bar) = context.bar {
                 bar.inc(1);
                 bar.set_message(format!("Scanning {}: {}", *counter, child_path.display()));
             }
 
-            let (cid, _) =
-                match update_file(db, child_path.as_path(), &metadata, Some(id), scan_id, true)
-                    .await
+            let (cid, _) = match update_file(
+                context.db,
+                child_path.as_path(),
+                &metadata,
+                Some(id),
+                context.scan_id,
+                true,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(sqlx::Error::Database(e))
+                    if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation =>
                 {
-                    Ok(r) => r,
-                    Err(sqlx::Error::Database(e))
-                        if e.kind() == sqlx::error::ErrorKind::ForeignKeyViolation =>
-                    {
-                        // Some newer scan has delete the parent
-                        // just return
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e.into()),
-                };
+                    // Some newer scan has delete the parent
+                    // just return
+                    return Ok(());
+                }
+                Err(e) => return Err(e.into()),
+            };
             tracing::debug!("Scanned: {} (id: {})", child_path.display(), cid);
 
             if metadata.is_dir() {
-                Box::pin(walk(
-                    db,
-                    root,
-                    scan_id,
-                    &child_path,
-                    cid,
-                    counter,
-                    bar,
-                    watches,
-                ))
-                .await?;
+                Box::pin(walk(context, &child_path, cid, counter)).await?;
             }
         }
 
@@ -412,17 +417,14 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
                 } else {
                     None
                 };
-                walk(
+                let context = WalkContext {
                     db,
-                    root.as_ref(),
+                    root: root.as_ref(),
                     scan_id,
-                    base.as_ref(),
-                    id,
-                    &mut counter,
-                    bar.as_ref(),
+                    bar: bar.as_ref(),
                     watches,
-                )
-                .await?;
+                };
+                walk(&context, base.as_ref(), id, &mut counter).await?;
 
                 counter
             } else {

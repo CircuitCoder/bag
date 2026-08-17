@@ -1,4 +1,9 @@
-use std::{borrow::Cow, collections::BTreeMap, string::FromUtf8Error};
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    fmt::{self, Write as _},
+    string::FromUtf8Error,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Segment<'a>(pub Cow<'a, str>, pub BTreeMap<Cow<'a, str>, Cow<'a, str>>);
@@ -9,18 +14,13 @@ impl<'a> Segment<'a> {
     }
 }
 
-impl ToString for Segment<'_> {
-    fn to_string(&self) -> String {
-        let mut result = urlencoding::encode(self.0.as_ref()).to_string();
-
+impl fmt::Display for Segment<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", urlencoding::encode(self.0.as_ref()))?;
         for (k, v) in self.1.iter() {
-            result.push(',');
-            result.push_str(&urlencoding::encode(k));
-            result.push('=');
-            result.push_str(&urlencoding::encode(v));
+            write!(f, ",{}={}", urlencoding::encode(k), urlencoding::encode(v))?;
         }
-
-        result
+        Ok(())
     }
 }
 
@@ -115,9 +115,15 @@ mod tests {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Path<'a>(pub Cow<'a, [Segment<'a>]>);
 
-impl ToString for Path<'_> {
-    fn to_string(&self) -> String {
-        itertools::join(self.0.iter().map(|s| s.to_string()), "/")
+impl fmt::Display for Path<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, segment) in self.0.iter().enumerate() {
+            if index > 0 {
+                f.write_char('/')?;
+            }
+            write!(f, "{segment}")?;
+        }
+        Ok(())
     }
 }
 
