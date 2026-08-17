@@ -280,7 +280,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
     // Phase 1: iterate through all parent directories in base, ensure that they are created, get their IDs.
     let mut cur = PathBuf::new();
     let mut parent = None;
-    if !base.as_ref().is_empty() {
+    if !base.as_ref().as_os_str().is_empty() {
         for seg in base.as_ref().components() {
             let joined = root.as_ref().join(&cur);
             let metadata = joined.metadata().map_err(|e| {
@@ -447,7 +447,7 @@ async fn rescan_inner<P1: AsRef<Path>, P2: AsRef<Path>>(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Base path does not exists, judge by whether
             // base == "" or not
-            if base.as_ref().is_empty() {
+            if base.as_ref().as_os_str().is_empty() {
                 return Err(anyhow::anyhow!(
                     "Root path {} does not exists: {}",
                     root.as_ref().display(),

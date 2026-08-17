@@ -5,9 +5,9 @@ use ouroboros::self_referencing;
 use std::{
     fs::File,
     io::{self, Cursor, Read, Seek, SeekFrom},
+    ops::Range,
     os::unix::fs::MetadataExt,
     path::PathBuf,
-    range::Range,
 };
 use zip::{HasZipMetadata, ZipArchive};
 
