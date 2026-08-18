@@ -438,7 +438,7 @@ pub async fn render_file(
 
 struct ThumbnailLookup {
     outer: String,
-    subpath: String,
+    subpath: Option<String>,
     media_path: String,
 }
 
@@ -455,13 +455,16 @@ fn thumbnail_lookup(path: &Path<'_>) -> Option<ThumbnailLookup> {
         return None;
     }
 
-    let subpath = marker.map_or_else(String::new, |marker| {
+    let subpath = marker.map(|marker| {
         segments[marker + 1..]
             .iter()
             .map(|segment| segment.name())
             .collect::<Vec<_>>()
             .join("/")
     });
+    if subpath.as_deref().is_some_and(str::is_empty) {
+        return None;
+    }
     let media_path = segments.last()?.name().to_owned();
 
     Some(ThumbnailLookup {
@@ -500,7 +503,7 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
         let Some(file) = file else {
             return Ok((axum::http::StatusCode::NOT_FOUND, "Not Found".to_owned()).into_response());
         };
-        if (file.is_directory && lookup.subpath.is_empty())
+        if (file.is_directory && lookup.subpath.is_none())
             || parsed.last().is_some_and(|segment| segment.name() == ":")
             || is_archive_path(&lookup.media_path)
         {
@@ -532,10 +535,10 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
         async fn cached_thumbnail(
             db: &Database,
             file_id: i64,
-            subpath: &str,
+            subpath: Option<&str>,
         ) -> Result<Option<(Vec<u8>, String)>, sqlx::Error> {
             Ok(sqlx::query!(
-                "SELECT thumbnail, mime FROM thumbnails WHERE file_id = ? AND subpath = ?",
+                "SELECT thumbnail, mime FROM thumbnails WHERE file_id = ? AND subpath IS ?",
                 file_id,
                 subpath,
             )
@@ -544,14 +547,16 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
             .map(|thumbnail| (thumbnail.thumbnail, thumbnail.mime)))
         }
 
-        let existing = cached_thumbnail(&state.db, file.id, &lookup.subpath).await?;
+        let existing = cached_thumbnail(&state.db, file.id, lookup.subpath.as_deref()).await?;
         let (thumbnail, mime) = if let Some(existing) = existing {
             existing
         } else {
             let _permit = state.thumbnail_queue.acquire().await;
 
             // A request ahead of us in the queue may have populated the cache.
-            if let Some(existing) = cached_thumbnail(&state.db, file.id, &lookup.subpath).await? {
+            if let Some(existing) =
+                cached_thumbnail(&state.db, file.id, lookup.subpath.as_deref()).await?
+            {
                 return Ok(thumbnail_body(existing.0, existing.1));
             }
 
@@ -561,7 +566,7 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
                     tracing::error!(
                         "Failed to open thumbnail source {} ({}): {}",
                         file.path,
-                        lookup.subpath,
+                        lookup.subpath.as_deref().unwrap_or("<whole file>"),
                         error
                     );
                     return Ok(fs_error_response(error));
@@ -583,7 +588,7 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
                     tracing::error!(
                         "Failed to extract thumbnail for {} ({}): {}",
                         file.path,
-                        lookup.subpath,
+                        lookup.subpath.as_deref().unwrap_or("<whole file>"),
                         error
                     );
                     return Ok((
@@ -594,16 +599,17 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
                 }
             };
 
+            let subpath = lookup.subpath.as_deref();
             if let Err(error) = sqlx::query!(
                 r#"
                 INSERT INTO thumbnails (file_id, subpath, thumbnail, mime)
                 VALUES (?, ?, ?, 'image/webp')
-                ON CONFLICT(file_id, subpath) DO UPDATE SET
+                ON CONFLICT DO UPDATE SET
                     thumbnail = excluded.thumbnail,
                     mime = excluded.mime
                 "#,
                 file.id,
-                lookup.subpath,
+                subpath,
                 thumbnail,
             )
             .execute(state.db.as_ref())
@@ -612,7 +618,7 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
                 tracing::error!(
                     "Failed to update thumbnail for {} ({}): {}",
                     file.id,
-                    lookup.subpath,
+                    lookup.subpath.as_deref().unwrap_or("<whole file>"),
                     error
                 );
             }
@@ -630,7 +636,7 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
             tracing::error!(
                 "Failed to handle thumbnail request for {} ({}): {}",
                 lookup.outer,
-                lookup.subpath,
+                lookup.subpath.as_deref().unwrap_or("<whole file>"),
                 error
             );
             (
@@ -827,8 +833,12 @@ mod tests {
         let lookup = thumbnail_lookup(&path).unwrap();
 
         assert_eq!(lookup.outer, "albums/outer.zip");
-        assert_eq!(lookup.subpath, "inner.zip/:/photo.jpg");
+        assert_eq!(lookup.subpath.as_deref(), Some("inner.zip/:/photo.jpg"));
         assert_eq!(lookup.media_path, "photo.jpg");
+
+        let physical = thumbnail_lookup(&Path::try_from("albums/photo.jpg").unwrap()).unwrap();
+        assert_eq!(physical.subpath, None);
+        assert!(thumbnail_lookup(&Path::try_from("albums/archive.zip/%3A").unwrap()).is_none());
     }
 
     #[test]

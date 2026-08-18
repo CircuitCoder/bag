@@ -10,10 +10,13 @@ CREATE TABLE files (
   -- The DIRECT PARENT of this file (a directory). NULL if this is the top-level directory itself
   parent INTEGER,
 
-  -- Archive members are discovered dynamically and are not represented in this table.
+  -- The container of this file (an archive). This is used to delegate the file reader
+  -- right now we don't support archives, so this is currently commented out.
+  -- container INTEGER,
 
-  -- Whether this file is a physical filesystem directory. Archive behavior is
-  -- determined from the file's MIME type during rendering.
+  -- Whether this file BEHAVES like a directory during render.
+  -- Right now this always coincide with actually being a directory. But
+  -- later when we support archives, archives will also have is_directory set to true
   is_directory BOOLEAN NOT NULL,
 
   -- Is marked as stale (by the scan with ID = scan_id). Will be removed at the end of that scan
@@ -37,17 +40,11 @@ CREATE TABLE scans (
 
 -- Thumbnail data
 CREATE TABLE thumbnails (
-    file_id INTEGER NOT NULL,
-    -- Empty for the physical file; otherwise the decoded path below an archive.
-    -- Nested archives use the same /:/ delimiter as raw file paths.
-    subpath TEXT NOT NULL DEFAULT '',
+    file_id INTEGER PRIMARY KEY,
     thumbnail BLOB NOT NULL,
     mime TEXT NOT NULL,
-
-    -- This is also the index for the thumbnail cache's primary lookup shape.
-    PRIMARY KEY (file_id, subpath),
 
     FOREIGN KEY (file_id)
         REFERENCES files(id)
         ON DELETE CASCADE
-) WITHOUT ROWID;
+);
