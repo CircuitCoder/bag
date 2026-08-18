@@ -58,6 +58,7 @@ pub struct Image {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GalleryImageType {
     Directory,
+    Archive,
     File,
 }
 

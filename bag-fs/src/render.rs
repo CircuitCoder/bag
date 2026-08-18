@@ -74,20 +74,22 @@ where
         .skip(offset)
         .take(limit)
         .map(|entry| {
-            let renders_as_directory = entry.is_directory || is_archive_path(&entry.name);
+            let ty = if entry.is_directory {
+                GalleryImageType::Directory
+            } else if is_archive_path(&entry.name) {
+                GalleryImageType::Archive
+            } else {
+                GalleryImageType::File
+            };
             let child = archive_child_path(path, &entry.name);
             let action_path = child.to_string();
             GalleryImage {
-                ty: if renders_as_directory {
-                    GalleryImageType::Directory
-                } else {
-                    GalleryImageType::File
-                },
-                thumbnail: if renders_as_directory {
-                    None
-                } else {
+                thumbnail: if matches!(&ty, GalleryImageType::File) {
                     (params.thumbnail)(child)
+                } else {
+                    None
                 },
+                ty,
                 action: Some(Action::Navigate { to: action_path }),
                 name: entry.name,
             }
@@ -183,7 +185,7 @@ mod tests {
             panic!("archive root did not render as a gallery");
         };
         assert_eq!(gallery.images.len(), 2);
-        assert!(matches!(&gallery.images[0].ty, GalleryImageType::Directory));
+        assert!(matches!(&gallery.images[0].ty, GalleryImageType::Archive));
         assert_eq!(gallery.images[0].thumbnail, None);
         assert_eq!(gallery.images[0].name, "inner.zip");
         assert!(matches!(&gallery.images[1].ty, GalleryImageType::File));

@@ -331,18 +331,20 @@ pub async fn render_file(
         let images = children
             .iter()
             .map(|row| {
-                let renders_as_directory = row.is_directory || is_archive_path(&row.path);
+                let ty = if row.is_directory {
+                    GalleryImageType::Directory
+                } else if is_archive_path(&row.path) {
+                    GalleryImageType::Archive
+                } else {
+                    GalleryImageType::File
+                };
                 GalleryImage {
-                    ty: if renders_as_directory {
-                        GalleryImageType::Directory
-                    } else {
-                        GalleryImageType::File
-                    },
-                    thumbnail: if renders_as_directory {
-                        None
-                    } else {
+                    thumbnail: if matches!(&ty, GalleryImageType::File) {
                         Some(format!("thumbnail/{}", encoded_relative_path(&row.path)))
+                    } else {
+                        None
                     },
+                    ty,
                     name: row
                         .path
                         .rsplit_once("/")

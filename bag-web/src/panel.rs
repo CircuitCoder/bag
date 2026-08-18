@@ -8,6 +8,14 @@ use bag_lib::ui::*;
 
 use crate::{Context, util::FetchError};
 
+fn gallery_placeholder_icon(ty: &GalleryImageType) -> &'static str {
+    match ty {
+        GalleryImageType::Directory => "folder",
+        GalleryImageType::Archive => "folder_zip",
+        GalleryImageType::File => "image",
+    }
+}
+
 #[component]
 pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) -> impl IntoView {
     let ctx: Option<Context> = use_context();
@@ -84,8 +92,11 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                         }.into_any());
 
                     let thumbnail = thumbnail.unwrap_or_else(|| {
+                        let icon = gallery_placeholder_icon(&img.ty);
                         view! {
-                            <div class="rendered-gallery-thumbnail-placeholder">?</div>
+                            <div class="rendered-gallery-thumbnail-placeholder">
+                                <span class="material-symbols-filled" aria-hidden="true">{icon}</span>
+                            </div>
                         }.into_any()
                     });
 
@@ -114,17 +125,20 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }
                 .into_any()
             }
-            bag_lib::ui::Component::Button(Button {
-                text,
-                icon: _,
-                action,
-            }) => {
+            bag_lib::ui::Component::Button(Button { text, icon, action }) => {
                 let dispatch = *dispatch;
                 let text = text.clone();
+                let icon = icon.as_ref().map(|icon| {
+                    view! {
+                        <span class="material-symbols-filled rendered-button-icon" aria-hidden="true">
+                            {icon.clone()}
+                        </span>
+                    }
+                });
                 let action = action.clone();
                 view! { <button class="rendered-button" on:click={move |_| {
                     dispatch.dispatch(action.clone());
-                }}>{text}</button> }
+                }}>{icon}{text}</button> }
                 .into_any()
             }
             bag_lib::ui::Component::Box(bag_lib::ui::Box {
@@ -240,5 +254,24 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         <div>
             {inner}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gallery_placeholder_icon;
+    use bag_lib::ui::GalleryImageType;
+
+    #[test]
+    fn selects_default_gallery_icons() {
+        assert_eq!(
+            gallery_placeholder_icon(&GalleryImageType::Directory),
+            "folder"
+        );
+        assert_eq!(
+            gallery_placeholder_icon(&GalleryImageType::Archive),
+            "folder_zip"
+        );
+        assert_eq!(gallery_placeholder_icon(&GalleryImageType::File), "image");
     }
 }

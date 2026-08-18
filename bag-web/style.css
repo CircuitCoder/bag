@@ -1,3 +1,39 @@
+@import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200");
+
+.material-symbols-outlined,
+.material-symbols-filled {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  font-feature-settings: 'liga';
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+.material-symbols-outlined {
+  font-variation-settings:
+    'FILL' 0,
+    'wght' 400,
+    'GRAD' 0,
+    'opsz' 24
+}
+
+.material-symbols-filled {
+  font-variation-settings:
+    'FILL' 1,
+    'wght' 400,
+    'GRAD' 0,
+    'opsz' 24
+}
+
 * {
   box-sizing: inherit;
 }
@@ -221,6 +257,10 @@ main > .layout-nav {
   justify-content: center;
 }
 
+.rendered-gallery-thumbnail-placeholder .material-symbols-filled {
+  font-size: 48px;
+}
+
 /* Image */
 .rendered-img,
 .rendered-video {
@@ -272,7 +312,14 @@ button,
 }
 
 .rendered-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 10px;
+}
+
+.rendered-button-icon {
+  font-size: 18px;
 }
 
 .rendered-text + .rendered-button {
