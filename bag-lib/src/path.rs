@@ -1,5 +1,8 @@
 use std::{
-    borrow::Cow, collections::BTreeMap, fmt::{self, Write as _}, string::FromUtf8Error,
+    borrow::Cow,
+    collections::BTreeMap,
+    fmt::{self, Write as _},
+    string::FromUtf8Error,
 };
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -158,6 +161,10 @@ impl<'s> Path<'s> {
         self.0.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn parent(&self) -> Option<Path<'_>> {
         if self.0.len() <= 1 {
             return None;
@@ -222,12 +229,22 @@ impl<'s> Path<'s> {
     }
 
     pub fn to_static(&self) -> Path<'static> {
-        let static_segments: Vec<Segment<'static>> = self.0
+        let static_segments: Vec<Segment<'static>> = self
+            .0
             .iter()
-            .map(|s| Segment(
-                Cow::Owned(s.0.as_ref().to_owned()),
-                s.1.iter().map(|(k, v)| (Cow::Owned(k.as_ref().to_owned()), Cow::Owned(v.as_ref().to_owned()))).collect()
-            ))
+            .map(|s| {
+                Segment(
+                    Cow::Owned(s.0.as_ref().to_owned()),
+                    s.1.iter()
+                        .map(|(k, v)| {
+                            (
+                                Cow::Owned(k.as_ref().to_owned()),
+                                Cow::Owned(v.as_ref().to_owned()),
+                            )
+                        })
+                        .collect(),
+                )
+            })
             .collect();
         Path(Cow::Owned(static_segments))
     }

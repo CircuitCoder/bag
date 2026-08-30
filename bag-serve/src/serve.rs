@@ -9,8 +9,8 @@ use axum::{
 };
 use bag_fs::{
     etag::Etag,
-    serve::{ArchiveProbe, ArchiveListing, FsHandler},
     render::{ArchiveRenderParams, archive_parent_path, render_archive},
+    serve::{ArchiveListing, ArchiveProbe, FsHandler},
     thumb::{extract_thumbnail_img, extract_thumbnail_video},
 };
 use bag_lib::{

@@ -127,11 +127,11 @@ impl<R: Read + Seek> ArchiveList for ZipArchive<R> {
 
             let remainder = &name[prefix.len()..];
             // Check: reject foo on foobar
-            if prefix != "" && !remainder.starts_with('/') {
+            if !prefix.is_empty() && !remainder.starts_with('/') {
                 return None;
             }
 
-            let remainder = if prefix == "" {
+            let remainder = if prefix.is_empty() {
                 remainder
             } else {
                 &remainder[1..]
@@ -141,7 +141,7 @@ impl<R: Read + Seek> ArchiveList for ZipArchive<R> {
             let is_dir;
 
             // See if the remaining path has a '/' in it.
-            if remainder == "" {
+            if remainder.is_empty() {
                 // This is the explicit entry for the directory itself, skip it
                 return None;
             } else if let Some(next_sep) = remainder.find('/') {
@@ -157,19 +157,19 @@ impl<R: Read + Seek> ArchiveList for ZipArchive<R> {
             if is_dir {
                 let new = subdirs.insert(name.to_owned());
                 if new {
-                    return Some(Ok(ArchiveEntry {
+                    Some(Ok(ArchiveEntry {
                         name: name.to_owned(),
                         is_dir: true,
-                    }));
+                    }))
                 } else {
-                    return None;
+                    None
                 }
             } else {
                 // This is a file, immediately emit
-                return Some(Ok(ArchiveEntry {
+                Some(Ok(ArchiveEntry {
                     name: name.to_owned(),
                     is_dir: false,
-                }));
+                }))
             }
         })
     }
@@ -251,7 +251,7 @@ impl<'a> File<'a> {
     {
         // Assert that the start of the remaining path is a marker segment
         let remaining = total.suffix(offset).ok_or(crate::Error::InvalidPath)?;
-        if remaining.len() == 0 || remaining.segments()[0].name() != ":" {
+        if remaining.is_empty() || remaining.segments()[0].name() != ":" {
             return Err(crate::Error::InvalidPath);
         }
 
@@ -277,12 +277,12 @@ impl<'a> File<'a> {
 
         // Needs to descend, move self into arena
         let mut arc = ZipArchive::new(self)?;
-        let lookup = if let Some(idx) = find_zip_entry_decoded(&arc, &leading_bare) {
+        let lookup = if let Some(idx) = find_zip_entry_decoded(&arc, leading_bare) {
             // There is an entry here. Since we do not include a slash at the end, it must be a file
             Lookup::File(idx)
         } else if find_zip_entry_decoded(&arc, &leading_bare_with_slash).is_some() {
             Lookup::ExplicitDir
-        } else if leading_bare == "" {
+        } else if leading_bare.is_empty() {
             // Always treat the root as an explicit directory
             Lookup::ExplicitDir
         } else {
@@ -295,10 +295,8 @@ impl<'a> File<'a> {
         if subpath.is_none() {
             match lookup {
                 Lookup::ExplicitDir | Lookup::NoEntry => {
-                    let listing = arc
-                        .archive_list(&leading_bare)
-                        .collect::<Result<Vec<_>>>()?;
-                    if listing.len() == 0 && matches!(lookup, Lookup::NoEntry) {
+                    let listing = arc.archive_list(leading_bare).collect::<Result<Vec<_>>>()?;
+                    if listing.is_empty() && matches!(lookup, Lookup::NoEntry) {
                         return Err(crate::Error::NotFound);
                     }
                     return handler(ArchiveOpen::Directory(listing));
@@ -328,7 +326,7 @@ impl<'a> File<'a> {
         };
         let mut file = open_subpath(&mut arc, f, pw, total.len() - offset)?;
         let subarc = File::Buf(seekbuf::Seekbuf::new(&mut file));
-        let ty = ArchiveType::from_name(&leading_bare)
+        let ty = ArchiveType::from_name(leading_bare)
             .ok_or(crate::Error::NotArchive(total.len() - leading_offset))?;
         subarc.descend_impl(ty, total, leading_offset, handler)
     }
