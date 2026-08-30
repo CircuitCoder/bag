@@ -3,11 +3,13 @@ use std::{
     time::SystemTime,
 };
 
+use bag_lib::path::Path;
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Etag<'s> {
     pub mtime: SystemTime,
     pub length: u64,
-    pub subpath: Option<&'s str>,
+    pub subpath: Option<Path<'s>>,
 }
 
 impl Etag<'_> {

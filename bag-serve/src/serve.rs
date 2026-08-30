@@ -9,7 +9,7 @@ use axum::{
 };
 use bag_fs::{
     etag::Etag,
-    fs::{ArchiveFetch, ArchiveListing, FsHandler},
+    serve::{ArchiveProbe, ArchiveListing, FsHandler},
     render::{ArchiveRenderParams, archive_parent_path, render_archive},
     thumb::{extract_thumbnail_img, extract_thumbnail_video},
 };
@@ -100,42 +100,6 @@ fn thumbnail_resource(path: Path<'_>) -> Option<String> {
         .collect::<Vec<_>>()
         .join("/");
     Some(format!("thumbnail/{serialized}"))
-}
-
-fn fs_error_response(error: bag_fs::Error) -> Response<Body> {
-    let (status, message) = match &error {
-        bag_fs::Error::ArchivePassword(_) => (
-            axum::http::StatusCode::UNAUTHORIZED,
-            "Archive password is missing or incorrect",
-        ),
-        bag_fs::Error::NotArchive(_) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            "Path does not reference a supported archive",
-        ),
-        bag_fs::Error::NotFound => (axum::http::StatusCode::NOT_FOUND, "Not Found"),
-        bag_fs::Error::IoError(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            (axum::http::StatusCode::NOT_FOUND, "Not Found")
-        }
-        bag_fs::Error::IoError(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            (axum::http::StatusCode::FORBIDDEN, "Permission Denied")
-        }
-        bag_fs::Error::IoError(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
-            (axum::http::StatusCode::BAD_REQUEST, "Reading a directory")
-        }
-        bag_fs::Error::RangeUnsatisfiable => (
-            axum::http::StatusCode::RANGE_NOT_SATISFIABLE,
-            "Range Unsatisfiable",
-        ),
-        bag_fs::Error::Zip(_) => (axum::http::StatusCode::BAD_REQUEST, "Invalid archive"),
-        _ => {
-            tracing::error!("Failed to read file: {error}");
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal Server Error",
-            )
-        }
-    };
-    (status, message).into_response()
 }
 
 fn archive_file_layout(
@@ -261,7 +225,7 @@ pub async fn render_file(
         };
         let thumbnail = thumbnail_resource;
         match fs.archive_fetch(&fs_path).await {
-            Ok(ArchiveFetch::Directory(listing)) => {
+            Ok(ArchiveProbe::Directory(listing)) => {
                 let mut layout = render_archive(
                     ArchiveRenderParams {
                         path,
@@ -273,7 +237,7 @@ pub async fn render_file(
                 layout.metadata = metadata;
                 return Ok(Some(LayoutOrAction::Layout(layout)));
             }
-            Ok(ArchiveFetch::File { parent }) => {
+            Ok(ArchiveProbe::File { parent }) => {
                 if path
                     .last()
                     .is_some_and(|segment| is_archive_path(segment.name()))
@@ -520,8 +484,8 @@ async fn thumbnail_response(state: &AppState, path: &str) -> Response<Body> {
             .any(|segment| segment.name() == ":")
         {
             match state.fs.archive_fetch(&parsed).await {
-                Ok(ArchiveFetch::File { .. }) => {}
-                Ok(ArchiveFetch::Directory(_)) => {
+                Ok(ArchiveProbe::File { .. }) => {}
+                Ok(ArchiveProbe::Directory(_)) => {
                     return Ok((
                         axum::http::StatusCode::BAD_REQUEST,
                         "Directories and archives do not have thumbnails".to_owned(),
@@ -804,7 +768,7 @@ mod tests {
         thumbnail_lookup, thumbnail_resource, thumbnail_response,
     };
     use crate::db::Database;
-    use bag_fs::fs::FsHandler;
+    use bag_fs::serve::FsHandler;
     use bag_lib::{action::Action, path::Path, ui::LayoutOrAction};
     use std::io::{Cursor, Write};
     use zip::{ZipWriter, write::SimpleFileOptions};

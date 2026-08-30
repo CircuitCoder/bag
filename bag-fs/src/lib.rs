@@ -1,10 +1,9 @@
 use thiserror::Error;
 
-use bag_lib::path::Path;
-
 pub mod etag;
-pub mod fs;
+pub mod file;
 pub mod render;
+pub mod serve;
 pub mod thumb;
 
 #[derive(Error, Debug)]
@@ -15,11 +14,16 @@ pub enum Error {
     #[error("Not found due to path segment mismatch")]
     NotFound,
 
-    #[error("Archive password is missing or incorrect")]
-    ArchivePassword(Path<'static>),
+    /// The index is the length of the _SUFFIX_. This is to make it directly propagatable
+    #[error("Archive password is missing or incorrect during file read operation")]
+    ArchivePassword(usize),
 
+    /// The index is the length of the _SUFFIX_. This is to make it directly propagatable
     #[error("Path does not reference a supported archive")]
-    NotArchive(Path<'static>),
+    NotArchive(usize),
+
+    #[error("Invalid path given for some API")]
+    InvalidPath,
 
     #[error("Range unsatisfiable")]
     RangeUnsatisfiable,

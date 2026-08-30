@@ -1,11 +1,8 @@
 use std::{
-    borrow::Cow,
-    collections::BTreeMap,
-    fmt::{self, Write as _},
-    string::FromUtf8Error,
+    borrow::Cow, collections::BTreeMap, fmt::{self, Write as _}, string::FromUtf8Error,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Segment<'a>(pub Cow<'a, str>, pub BTreeMap<Cow<'a, str>, Cow<'a, str>>);
 
 impl<'a> Segment<'a> {
@@ -112,8 +109,14 @@ mod tests {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Path<'a>(pub Cow<'a, [Segment<'a>]>);
+
+impl<'s> AsRef<[Segment<'s>]> for Path<'s> {
+    fn as_ref(&self) -> &[Segment<'s>] {
+        self.0.as_ref()
+    }
+}
 
 impl fmt::Display for Path<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -143,8 +146,16 @@ impl<'s> TryFrom<&'s str> for Path<'s> {
 }
 
 impl<'s> Path<'s> {
+    pub const fn empty() -> Self {
+        Path(Cow::Borrowed(&[]))
+    }
+
     pub const fn new(inner: Cow<'s, [Segment<'s>]>) -> Self {
         Path(inner)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 
     pub fn parent(&self) -> Option<Path<'_>> {
@@ -193,5 +204,57 @@ impl<'s> Path<'s> {
 
     pub fn to_bare_string(&self) -> String {
         itertools::join(self.0.iter().map(|s| s.0.as_ref()), "/")
+    }
+
+    pub fn split_subpath(&self, marker: &str) -> (Path<'_>, Option<Path<'_>>) {
+        for (index, segment) in self.0.iter().enumerate() {
+            if segment.name() == marker {
+                let first = &self.0[..index];
+                let second = &self.0[index..];
+                return (
+                    Path(Cow::Borrowed(first)),
+                    Some(Path(Cow::Borrowed(second))),
+                );
+            }
+        }
+
+        (Path(Cow::Borrowed(&self.0)), None)
+    }
+
+    pub fn to_static(&self) -> Path<'static> {
+        let static_segments: Vec<Segment<'static>> = self.0
+            .iter()
+            .map(|s| Segment(
+                Cow::Owned(s.0.as_ref().to_owned()),
+                s.1.iter().map(|(k, v)| (Cow::Owned(k.as_ref().to_owned()), Cow::Owned(v.as_ref().to_owned()))).collect()
+            ))
+            .collect();
+        Path(Cow::Owned(static_segments))
+    }
+
+    pub fn prefix(&self, to: usize) -> Option<Path<'_>> {
+        if to > self.0.len() {
+            return None;
+        }
+
+        let prefix_segments = &self.0[..to.min(self.0.len())];
+        Some(Path(Cow::Borrowed(prefix_segments)))
+    }
+
+    pub fn suffix(&self, from: usize) -> Option<Path<'_>> {
+        if from == self.0.len() {
+            return Some(Path(Cow::Borrowed(&[])));
+        }
+
+        if from > self.0.len() {
+            return None;
+        }
+
+        let suffix_segments = &self.0[from..];
+        Some(Path(Cow::Borrowed(suffix_segments)))
+    }
+
+    pub fn borrow(&self) -> Path<'_> {
+        Path(Cow::Borrowed(self.0.as_ref()))
     }
 }
