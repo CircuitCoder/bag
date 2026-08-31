@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "bag-fs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "auto_enums",
  "axum",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "bag-lib"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "itertools 0.15.0",
  "serde",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "bag-serve"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "bag-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bag-lib",
  "console_error_panic_hook",

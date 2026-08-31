@@ -94,6 +94,9 @@ impl Context {
             Action::Navigate { to: p } => {
                 self.navigate(p.clone(), NavigateType::Push);
             }
+            Action::Redirect { to: p } => {
+                self.navigate(p.clone(), NavigateType::Replace);
+            }
         }
     }
 

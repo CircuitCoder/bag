@@ -206,7 +206,7 @@ pub fn Panel(
                         }) else {
                             return;
                         };
-                        dispatch.dispatch(bag_lib::action::Action::Navigate {
+                        dispatch.dispatch(bag_lib::action::Action::Redirect {
                             to: updated_path.to_string(),
                         });
                     }

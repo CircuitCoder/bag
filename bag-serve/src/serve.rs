@@ -133,7 +133,7 @@ fn is_archive_path(path: &str) -> bool {
 }
 
 fn archive_redirect(path: &Path<'_>) -> LayoutOrAction {
-    LayoutOrAction::Action(Action::Navigate {
+    LayoutOrAction::Action(Action::Redirect {
         to: path.append(":".try_into().unwrap()).to_string(),
     })
 }

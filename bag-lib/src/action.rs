@@ -5,4 +5,6 @@ use serde::{Deserialize, Serialize};
 pub enum Action {
     /// Navigate to another path
     Navigate { to: String },
+    /// Redirect to another path,
+    Redirect { to: String },
 }
