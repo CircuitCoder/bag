@@ -4,7 +4,7 @@ use bag_fs::{
 };
 use bag_lib::{
     path::Path,
-    ui::{Component, GalleryImageType},
+    ui::{Component, GalleryImageType, InputType, Text, TextVariant},
 };
 
 #[test]
@@ -21,6 +21,11 @@ fn keeps_archive_markers_in_file_parent_paths() {
 
 #[test]
 fn renders_archive_listing_and_classifies_nested_archives_by_mime() {
+    let metadata = vec![Component::Text(Text {
+        content: "Gallery".to_owned(),
+        variant: TextVariant::Title,
+        action: None,
+    })];
     let layout = render_archive(
         ArchiveRenderParams {
             path: Path::try_from("file/gallery.zip/%3A,pw=secret,limit=2,offset=0").unwrap(),
@@ -37,8 +42,13 @@ fn renders_archive_listing_and_classifies_nested_archives_by_mime() {
                 is_dir: false,
             },
         ],
+        metadata,
     );
-    assert!(layout.metadata.is_empty());
+    assert_eq!(layout.metadata.len(), 1);
+    let Component::Text(rendered_metadata) = &layout.metadata[0] else {
+        panic!("archive metadata was not preserved");
+    };
+    assert_eq!(rendered_metadata.content, "Gallery");
     assert_eq!(layout.left, None);
     assert_eq!(layout.right, None);
     let Component::Gallery(gallery) = &layout.main[0] else {
@@ -53,4 +63,29 @@ fn renders_archive_listing_and_classifies_nested_archives_by_mime() {
         gallery.images[1].thumbnail.as_deref(),
         Some("thumb/file/gallery.zip/%3A,pw=secret/photo%20one.jpg")
     );
+}
+
+#[test]
+fn renders_a_password_input_for_the_failing_archive_marker() {
+    let path = Path::try_from("file/outer.zip/%3A/inner.zip/%3A/photo.jpg").unwrap();
+    let metadata = vec![Component::Text(Text {
+        content: "photo.jpg".to_owned(),
+        variant: TextVariant::Title,
+        action: None,
+    })];
+
+    let layout = bag_fs::render::render_archive_password(&path, 4, metadata);
+
+    assert_eq!(layout.metadata.len(), 1);
+    assert!(layout.left.is_none());
+    assert!(layout.right.is_none());
+    let [Component::Input(input)] = layout.main.as_slice() else {
+        panic!("password error did not render a single input");
+    };
+    assert!(!input.bidir);
+    assert_eq!(input.segment, 4);
+    assert_eq!(input.param, "pw");
+    assert!(matches!(input.ty, InputType::Password));
+    assert_eq!(input.placeholder.as_deref(), Some("Password"));
+    assert_eq!(input.button.as_deref(), Some("Open"));
 }

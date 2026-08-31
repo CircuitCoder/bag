@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use bag_lib::{
     action::Action,
     path::{Path, Segment},
-    ui::{Component, Gallery, GalleryImage, GalleryImageType, Layout},
+    ui::{Component, Gallery, GalleryImage, GalleryImageType, Input, InputType, Layout},
 };
 
 use crate::file::ArchiveEntry;
@@ -51,6 +51,7 @@ fn is_archive_path(path: &str) -> bool {
 pub fn render_archive<Thumbnail>(
     params: ArchiveRenderParams<'_, Thumbnail>,
     listing: Vec<ArchiveEntry>,
+    metadata: Vec<Component>,
 ) -> Layout
 where
     Thumbnail: Fn(Path<'_>) -> Option<String> + Send + Sync,
@@ -98,7 +99,7 @@ where
     Layout {
         top: vec![],
         main: vec![Component::Gallery(Gallery { images })],
-        metadata: vec![],
+        metadata,
         left: (!is_start).then(|| {
             let previous = offset.saturating_sub(limit).to_string();
             path.with_arg("offset", Some(&previous)).to_string()
@@ -107,6 +108,60 @@ where
             let next = offset.saturating_add(limit).to_string();
             path.with_arg("offset", Some(&next)).to_string()
         }),
+    }
+}
+
+pub fn render_archive_file(
+    path: &Path<'_>,
+    siblings: Vec<ArchiveEntry>,
+    metadata: Vec<Component>,
+) -> Layout {
+    let current_name = path.last().map(|segment| segment.name());
+    let current =
+        current_name.and_then(|name| siblings.iter().position(|entry| entry.name == name));
+    let parent_path = path.parent();
+    let sibling_path = |name: &str| {
+        parent_path.as_ref().map(|parent| {
+            parent
+                .append(Segment::new(name.into(), Default::default()))
+                .to_string()
+        })
+    };
+
+    Layout {
+        top: vec![],
+        main: vec![Component::Image(bag_lib::ui::Image {
+            resource: path.to_string(),
+            mime: None,
+        })],
+        metadata,
+        left: current
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| sibling_path(&siblings[index].name)),
+        right: current
+            .and_then(|index| siblings.get(index + 1))
+            .and_then(|entry| sibling_path(&entry.name)),
+    }
+}
+
+pub fn render_archive_password(
+    _path: &Path<'_>,
+    offset: usize,
+    metadata: Vec<Component>,
+) -> Layout {
+    Layout {
+        top: vec![],
+        main: vec![Component::Input(Input {
+            bidir: false,
+            segment: offset,
+            param: "pw".to_owned(),
+            ty: InputType::Password,
+            placeholder: Some("Password".to_owned()),
+            button: Some("Open".to_owned()),
+        })],
+        metadata,
+        left: None,
+        right: None,
     }
 }
 

@@ -415,6 +415,7 @@ dependencies = [
  "indicatif",
  "inotify",
  "mime_guess",
+ "serde_json",
  "sqlx",
  "tempfile",
  "tokio",

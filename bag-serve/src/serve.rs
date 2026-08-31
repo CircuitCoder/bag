@@ -13,7 +13,10 @@ use axum::{
 };
 use bag_fs::{
     file::{ArchiveEntry, ArchiveOpen, File},
-    render::{ArchiveRenderParams, archive_parent_path, render_archive},
+    render::{
+        ArchiveRenderParams, archive_parent_path, render_archive, render_archive_file,
+        render_archive_password,
+    },
     serve::{FileThunk, RenderContext, finalize_range, read_range},
     thumb::{extract_thumbnail_img, extract_thumbnail_video},
 };
@@ -163,39 +166,6 @@ fn thumbnail_resource(path: Path<'_>) -> Option<String> {
     Some(format!("thumbnail/{serialized}"))
 }
 
-pub fn render_archive_layout(
-    path: &Path<'_>,
-    siblings: Vec<ArchiveEntry>,
-    metadata: Vec<Component>,
-) -> Layout {
-    let current_name = path.last().map(|segment| segment.name());
-    let current =
-        current_name.and_then(|name| siblings.iter().position(|entry| entry.name == name));
-    let parent_path = path.parent();
-    let sibling_path = |name: &str| {
-        parent_path.as_ref().map(|parent| {
-            parent
-                .append(Segment::new(name.into(), Default::default()))
-                .to_string()
-        })
-    };
-
-    Layout {
-        top: vec![],
-        main: vec![Component::Image(bag_lib::ui::Image {
-            resource: path.to_string(),
-            mime: None,
-        })],
-        metadata,
-        left: current
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| sibling_path(&siblings[index].name)),
-        right: current
-            .and_then(|index| siblings.get(index + 1))
-            .and_then(|entry| sibling_path(&entry.name)),
-    }
-}
-
 pub async fn render_file(
     db: &Database,
     base: &std::path::Path,
@@ -284,29 +254,41 @@ pub async fn render_file(
         };
         let path = path.to_static();
         let response = bag_fs::serve::serve(base, &fs_path, &HeaderMap::new(), async move |ctx| {
-            let result = match open_archive_view(ctx.file).await? {
-                ArchiveView::Directory(listing) => {
-                    let mut layout = render_archive(
-                        ArchiveRenderParams {
-                            path: path.borrow(),
-                            default_page_size: DEFAULT_PAGE_SIZE,
-                            thumbnail: thumbnail_resource,
-                        },
-                        listing,
-                    );
-                    layout.metadata = metadata;
-                    LayoutOrAction::Layout(layout)
-                }
-                ArchiveView::File(siblings) => {
+            let result = match open_archive_view(ctx.file).await {
+                Ok(ArchiveView::Directory(listing)) => LayoutOrAction::Layout(render_archive(
+                    ArchiveRenderParams {
+                        path: path.borrow(),
+                        default_page_size: DEFAULT_PAGE_SIZE,
+                        thumbnail: thumbnail_resource,
+                    },
+                    listing,
+                    metadata,
+                )),
+                Ok(ArchiveView::File(siblings)) => {
                     if path
                         .last()
                         .is_some_and(|segment| is_archive_path(segment.name()))
                     {
                         archive_redirect(&path)
                     } else {
-                        LayoutOrAction::Layout(render_archive_layout(&path, siblings, metadata))
+                        LayoutOrAction::Layout(render_archive_file(&path, siblings, metadata))
                     }
                 }
+                Err(bag_fs::Error::ArchivePassword(suffix_len)) => {
+                    let offset = path
+                        .len()
+                        .checked_sub(suffix_len)
+                        .ok_or(bag_fs::Error::InvalidPath)?;
+                    if path
+                        .segments()
+                        .get(offset)
+                        .is_none_or(|segment| segment.name() != ":")
+                    {
+                        return Err(bag_fs::Error::InvalidPath);
+                    }
+                    LayoutOrAction::Layout(render_archive_password(&path, offset, metadata))
+                }
+                Err(error) => return Err(error),
             };
             Ok(render_response(result))
         })
@@ -823,6 +805,18 @@ mod tests {
     use std::io::{Cursor, Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
+    fn encrypted_zip_with_file(name: &str, contents: &[u8], password: &str) -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                name,
+                SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, password),
+            )
+            .unwrap();
+        writer.write_all(contents).unwrap();
+        writer.finish().unwrap().into_inner()
+    }
+
     #[test]
     fn detects_archive_paths() {
         assert!(is_archive_path("gallery.ZIP"));
@@ -942,6 +936,51 @@ mod tests {
             .unwrap();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(std::str::from_utf8(&body).unwrap().contains("Image"));
+    }
+
+    #[tokio::test]
+    async fn renders_password_inputs_for_the_failing_archive_marker() {
+        let nested = encrypted_zip_with_file("photo.jpg", b"image contents", "inner");
+        let outer = encrypted_zip_with_file("inner.zip", &nested, "outer");
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("outer.zip"), &outer).unwrap();
+        let database_path = directory.path().join("database.sqlite");
+        let database = Database::setup(&format!("sqlite:{}", database_path.display()))
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO files (path, mtime, length, scan_id, is_directory)
+            VALUES ('outer.zip', datetime('now'), ?, 1, FALSE)
+            "#,
+        )
+        .bind(outer.len() as i64)
+        .execute(database.as_ref())
+        .await
+        .unwrap();
+
+        for (path, expected_segment) in [
+            ("file/outer.zip/%3A/inner.zip/%3A/photo.jpg", 2),
+            ("file/outer.zip/%3A,pw=outer/inner.zip/%3A/photo.jpg", 4),
+        ] {
+            let response = render_file(&database, directory.path(), Path::try_from(path).unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let rendered: LayoutOrAction = serde_json::from_slice(&body).unwrap();
+            let LayoutOrAction::Layout(layout) = rendered else {
+                panic!("password error rendered a navigation action");
+            };
+            assert!(!layout.metadata.is_empty());
+            let [bag_lib::ui::Component::Input(input)] = layout.main.as_slice() else {
+                panic!("password error did not render a single input");
+            };
+            assert_eq!(input.segment, expected_segment);
+            assert_eq!(input.param, "pw");
+            assert!(matches!(input.ty, bag_lib::ui::InputType::Password));
+        }
     }
 
     #[tokio::test]
