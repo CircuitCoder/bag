@@ -59,11 +59,32 @@ fn set_backend_and_reload(backend: String) {
     web_sys::window().unwrap().location().reload().unwrap();
 }
 
+// TODO: serialize & deserialize
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GalleryMode {
+    Grid,
+    List,
+}
+
+#[derive(Clone)]
+struct Settings {
+    gallery_mode: RwSignal<GalleryMode>,
+}
+
+impl Settings {
+    fn new() -> Self {
+        Self {
+            gallery_mode: RwSignal::new(GalleryMode::Grid),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Context {
     targets: RwSignal<RenderTargetSet>,
     backend: String,
     cfg_dialog: Arc<NodeRef<leptos::html::Dialog>>,
+    settings: Settings,
 }
 
 enum NavigateType {
@@ -84,6 +105,7 @@ impl Context {
             }),
             backend,
             cfg_dialog: Arc::new(NodeRef::new()),
+            settings: Settings::new(),
         };
         ret.subscribe(&ret.targets.read_untracked().current, retire_rx);
         ret
@@ -250,6 +272,10 @@ impl Context {
         if let Some(dialog) = self.cfg_dialog.get() {
             dialog.show_modal().unwrap();
         }
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
     }
 }
 

@@ -6,7 +6,7 @@ use leptos::prelude::*;
 
 use bag_lib::ui::*;
 
-use crate::{Context, util::FetchError};
+use crate::{Context, GalleryMode, Settings, util::FetchError};
 
 fn gallery_placeholder_icon(ty: &GalleryImageType) -> &'static str {
     match ty {
@@ -35,9 +35,11 @@ pub fn Panel(
         let c = c.clone();
         async move { c.handle(&a).await }
     });
+    let settings = ctx.settings().clone();
 
     fn render_static(
         dispatch: &Action<bag_lib::action::Action, ()>,
+        settings: &Settings,
         backend: &str,
         comp: &bag_lib::ui::Component,
         path: &str,
@@ -124,9 +126,33 @@ pub fn Panel(
                     }
                 }).collect();
 
+                let settings = settings.clone();
+
                 view! {
                     <div class="rendered-gallery">
-                        {items}
+                        <div class="rendered-gallery-header">
+                            <form class="rendered-gallery-display">
+                                <label>
+                                    <input type="radio" name="display" value="grid" checked={settings.gallery_mode.get() == GalleryMode::Grid} on:change:target={move |ev| {
+                                        if ev.target().checked() {
+                                            settings.gallery_mode.set(GalleryMode::Grid);
+                                        }
+                                    }} />
+                                    <span class="material-symbols-filled" aria-hidden="true">grid_view</span>
+                                </label>
+                                <label>
+                                    <input type="radio" name="display" value="list" checked={settings.gallery_mode.get() == GalleryMode::List} on:change:target={move |ev| {
+                                        if ev.target().checked() {
+                                            settings.gallery_mode.set(GalleryMode::List);
+                                        }
+                                    }} />
+                                    <span class="material-symbols-filled" aria-hidden="true">list</span>
+                                </label>
+                            </form>
+                        </div>
+                        <div class="rendered-gallery-items">
+                            {items}
+                        </div>
                     </div>
                 }
                 .into_any()
@@ -154,7 +180,7 @@ pub fn Panel(
             }) => {
                 let children: Vec<_> = children
                     .iter()
-                    .map(|c| render_static(dispatch, backend, c, path))
+                    .map(|c| render_static(dispatch, settings, backend, c, path))
                     .collect();
                 let mut class = "rendered-box".to_owned();
                 if *horizontal {
@@ -244,7 +270,9 @@ pub fn Panel(
     }
     let render = {
         let backend = backend.clone();
-        move |comp: &bag_lib::ui::Component| render_static(&dispatch, &backend, comp, &path)
+        move |comp: &bag_lib::ui::Component| {
+            render_static(&dispatch, &settings, &backend, comp, &path)
+        }
     };
 
     let nav_ctx = ctx.clone();

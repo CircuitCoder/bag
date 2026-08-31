@@ -192,30 +192,54 @@ main > .layout-nav {
 
 /* Gallery */
 .rendered-gallery {
-  --item-width: 150px;
-  --item-height: 150px;
-
   font-family: var(--font-monospace);
-  display: grid;
-  grid-template-columns: repeat(auto-fit, var(--item-width));
-  justify-content: center;
-  gap: 10px;
-
   width: 100%;
   padding: 20px;
 }
 
+.rendered-gallery-header {
+  display: block;
+}
+
+.rendered-gallery-header input {
+  display: none;
+}
+
+.rendered-gallery-header label {
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.rendered-gallery-header label:hover {
+  opacity: .7;
+}
+
+.rendered-gallery-header label:has(:checked) {
+  opacity: 1;
+}
+
+.rendered-gallery-items {
+  --item-dim: 150px;
+
+  display: grid;
+  grid-template-columns: repeat(auto-fit, var(--item-dim));
+  justify-content: center;
+  gap: 10px;
+
+  width: 100%;
+}
+
 .rendered-gallery-img {
-  height: calc(2px + var(--item-height));
-  width: calc(2px + var(--item-width));
+  height: calc(2px + var(--item-dim));
+  width: calc(2px + var(--item-dim));
   border: 1px solid rgba(from var(--foreground) r g b / 0.1);
   cursor: pointer;
 }
 
 .rendered-gallery-thumbnail,
 .rendered-gallery-thumbnail-placeholder {
-  height: var(--item-height);
-  width: var(--item-width);
+  height: var(--item-dim);
+  width: var(--item-dim);
 }
 
 .rendered-gallery-thumbnail {
@@ -258,8 +282,43 @@ main > .layout-nav {
 }
 
 .rendered-gallery-thumbnail-placeholder .material-symbols-filled {
-  font-size: 48px;
+  font-size: calc(var(--item-dim) / 150 * 48);
 }
+
+.rendered-gallery-header:has(input[value="list"]:checked) +
+.rendered-gallery-items {
+  --item-dim: 50px;
+  grid-template-columns: 1fr;
+}
+
+.rendered-gallery-header:has(input[value="list"]:checked) +
+.rendered-gallery-items
+.rendered-gallery-img {
+  width: 100%;
+  display: flex;
+  height: 51px;
+  border-bottom: 1px solid rgba(from var(--foreground) r g b / 0.1);
+}
+
+.rendered-gallery-header:has(input[value="list"]:checked) +
+.rendered-gallery-items
+.rendered-gallery-img img {
+  width: 50px;
+  height: 50px;
+}
+
+.rendered-gallery-header:has(input[value="list"]:checked) +
+.rendered-gallery-items
+.rendered-gallery-img::after {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 10px;
+}
+
 
 /* Image */
 .rendered-img,
