@@ -13,8 +13,8 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 
 use bag_fs::{
     Error, Result,
-    file::{ArchiveEntry, ArchiveOpen},
-    serve::{OpenFile, RenderContext, finalize_range, read_range, serve},
+    file::{ArchiveEntry, ArchiveOpen, File},
+    serve::{FileThunk, RenderContext, finalize_range, read_range, serve},
 };
 
 #[derive(Debug)]
@@ -77,32 +77,8 @@ async fn open(root: &std::path::Path, path: &str) -> Result<Opened> {
     let output = Arc::clone(&opened);
     let path = Path::try_from(path).unwrap();
 
-    let response = serve(root, &path, &HeaderMap::new(), move |context| {
-        let RenderContext { file, etag } = context;
-        let opened = match file {
-            OpenFile::Fs(mut file) => {
-                let mut contents = Vec::new();
-                file.read_to_end(&mut contents)?;
-                Opened::Physical { contents, etag }
-            }
-            OpenFile::Nested(ArchiveOpen::File {
-                siblings,
-                mut file,
-                size,
-            }) => {
-                let mut contents = Vec::new();
-                file.read_to_end(&mut contents)?;
-                Opened::File {
-                    contents,
-                    siblings,
-                    size,
-                    etag,
-                }
-            }
-            OpenFile::Nested(ArchiveOpen::Directory(entries)) => {
-                Opened::Directory { entries, etag }
-            }
-        };
+    let response = serve(root, &path, &HeaderMap::new(), async move |context| {
+        let opened = realize(context).await?;
         *output.lock().unwrap() = Some(opened);
         Ok(Response::new(Body::empty()))
     })
@@ -114,6 +90,43 @@ async fn open(root: &std::path::Path, path: &str) -> Result<Opened> {
         .into_inner()
         .unwrap()
         .unwrap())
+}
+
+async fn realize(context: RenderContext<'_>) -> Result<Opened> {
+    let RenderContext { file, etag } = context;
+    match file {
+        FileThunk::Fs(mut file) => {
+            tokio::task::spawn_blocking(move || {
+                let mut contents = Vec::new();
+                file.read_to_end(&mut contents)?;
+                Ok(Opened::Physical { contents, etag })
+            })
+            .await?
+        }
+        FileThunk::Nested(file, ty, path) => {
+            let path = path.to_static();
+            tokio::task::spawn_blocking(move || {
+                File::Fs(file).descend(ty, &path, move |opened| match opened {
+                    ArchiveOpen::File {
+                        siblings,
+                        mut file,
+                        size,
+                    } => {
+                        let mut contents = Vec::new();
+                        file.read_to_end(&mut contents)?;
+                        Ok(Opened::File {
+                            contents,
+                            siblings,
+                            size,
+                            etag,
+                        })
+                    }
+                    ArchiveOpen::Directory(entries) => Ok(Opened::Directory { entries, etag }),
+                })
+            })
+            .await?
+        }
+    }
 }
 
 fn entry_summary(mut entries: Vec<ArchiveEntry>) -> Vec<(String, bool)> {
@@ -142,12 +155,36 @@ async fn serves_physical_files_and_short_circuits_matching_etags() {
         format!("\"{}\"", opened.etag()).parse().unwrap(),
     );
     let path = Path::try_from("plain.txt").unwrap();
-    let response = serve(directory.path(), &path, &headers, |_| -> Result<Response> {
-        panic!("matching ETag should bypass the renderer")
-    })
+    let response = serve(
+        directory.path(),
+        &path,
+        &headers,
+        async |_| -> Result<Response> { panic!("matching ETag should bypass the renderer") },
+    )
     .await
     .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn does_not_descend_when_the_renderer_ignores_the_thunk() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("broken.zip"), b"not a zip").unwrap();
+    let path = Path::try_from("broken.zip/%3A").unwrap();
+
+    let response = serve(
+        directory.path(),
+        &path,
+        &HeaderMap::new(),
+        async |context| {
+            assert!(matches!(context.file, FileThunk::Nested(..)));
+            Ok(Response::new(Body::empty()))
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

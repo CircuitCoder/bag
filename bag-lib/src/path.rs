@@ -274,4 +274,13 @@ impl<'s> Path<'s> {
     pub fn borrow(&self) -> Path<'_> {
         Path(Cow::Borrowed(self.0.as_ref()))
     }
+
+    pub fn append<'r, 'a: 'r>(&self, seg: Segment<'a>) -> Path<'r>
+    where
+        's: 'r,
+    {
+        let mut segments = self.segments().to_vec();
+        segments.push(seg);
+        Path(Cow::Owned(segments))
+    }
 }

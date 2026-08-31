@@ -411,6 +411,7 @@ dependencies = [
  "bag-lib",
  "chrono",
  "clap",
+ "image",
  "indicatif",
  "inotify",
  "mime_guess",

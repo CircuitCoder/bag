@@ -78,9 +78,9 @@ fn parse_range(headers: &HeaderMap, length: u64) -> Result<Option<Range<u64>>> {
     Ok(Some(Range { start, end }))
 }
 
-pub enum OpenFile<'a> {
+pub enum FileThunk<'p> {
     Fs(std::fs::File),
-    Nested(crate::file::ArchiveOpen<'a>),
+    Nested(std::fs::File, ArchiveType, BagPath<'p>),
 }
 
 pub fn error_to_resp(error: crate::Error) -> Response {
@@ -121,7 +121,7 @@ pub fn error_to_resp(error: crate::Error) -> Response {
 }
 
 pub struct RenderContext<'a> {
-    pub file: OpenFile<'a>,
+    pub file: FileThunk<'a>,
     pub etag: String,
 }
 
@@ -136,7 +136,7 @@ pub async fn serve<F>(
     render: F,
 ) -> Result<Response>
 where
-    F: (for<'a> FnOnce(RenderContext<'a>) -> Result<Response>) + Send + 'static,
+    F: for<'a> AsyncFnOnce(RenderContext<'a>) -> Result<Response>,
 {
     let mut base = base.to_path_buf();
     let (outer, subpath) = path.split_subpath(":");
@@ -176,33 +176,20 @@ where
     // Read file out
     let file = file.into_std().await;
     let Some(subpath) = subpath else {
-        return tokio::task::spawn_blocking(move || {
-            let ctx = RenderContext {
-                file: OpenFile::Fs(file),
-                etag: encoded_etag,
-            };
-            render(ctx)
-        })
-        .await?;
+        let ctx = RenderContext {
+            file: FileThunk::Fs(file),
+            etag: encoded_etag,
+        };
+        return render(ctx).await;
     };
 
     // Descend
-    // TODO: move to blocking thread
     let ty = ArchiveType::from_path(&base).ok_or(crate::Error::NotArchive(subpath.len()))?;
-    tokio::task::spawn_blocking({
-        let subpath = subpath.to_static();
-        move || {
-            let wrapped = crate::file::File::Fs(file);
-            wrapped.descend(ty, &subpath, |open| {
-                let ctx = RenderContext {
-                    file: OpenFile::Nested(open),
-                    etag: encoded_etag,
-                };
-                render(ctx)
-            })
-        }
-    })
-    .await?
+    let ctx = RenderContext {
+        file: FileThunk::Nested(file, ty, subpath),
+        etag: encoded_etag,
+    };
+    render(ctx).await
 }
 
 pub fn read_range(
