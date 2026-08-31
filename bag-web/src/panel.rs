@@ -17,7 +17,10 @@ fn gallery_placeholder_icon(ty: &GalleryImageType) -> &'static str {
 }
 
 #[component]
-pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) -> impl IntoView {
+pub fn Panel(
+    data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>,
+    path: String,
+) -> impl IntoView {
     let ctx: Option<Context> = use_context();
     if ctx.is_none() {
         web_sys::console::error_1(&"Panel component must be used within a Context provider".into());
@@ -37,7 +40,10 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
         dispatch: &Action<bag_lib::action::Action, ()>,
         backend: &str,
         comp: &bag_lib::ui::Component,
+        path: &str,
     ) -> AnyView {
+        let initial_path = bag_lib::path::Path::try_from(path).unwrap(); // TODO: handle this
+
         match comp {
             bag_lib::ui::Component::Text(Text {
                 content,
@@ -148,7 +154,7 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
             }) => {
                 let children: Vec<_> = children
                     .iter()
-                    .map(|c| render_static(dispatch, backend, c))
+                    .map(|c| render_static(dispatch, backend, c, path))
                     .collect();
                 let mut class = "rendered-box".to_owned();
                 if *horizontal {
@@ -170,11 +176,75 @@ pub fn Panel(data: ArcReadSignal<Option<Result<LayoutOrAction, FetchError>>>) ->
                 }
                 .into_any()
             }
+            bag_lib::ui::Component::Input(bag_lib::ui::Input {
+                bidir,
+                segment,
+                param,
+                ty,
+                placeholder,
+                button,
+            }) => {
+                let init = bidir
+                    .then(|| {
+                        initial_path
+                            .segments()
+                            .get(*segment)
+                            .and_then(|s| s.arg(param))
+                    })
+                    .flatten()
+                    .unwrap_or("");
+                let input_value = ArcRwSignal::new(init.to_owned());
+                let initial_path = initial_path.to_static();
+                let commit = {
+                    let input_value = input_value.clone();
+                    let dispatch = *dispatch;
+                    let segment = *segment;
+                    let param = param.clone();
+                    move || {
+                        let Some(updated_path) = initial_path.update(segment, |orig| {
+                            orig.with_arg_owned(param.clone(), Some(input_value.get_untracked()))
+                        }) else {
+                            return;
+                        };
+                        dispatch.dispatch(bag_lib::action::Action::Navigate {
+                            to: updated_path.to_string(),
+                        });
+                    }
+                };
+                view! {
+                    <div class="rendered-input">
+                        <input
+                            type={ty.as_str()}
+                            placeholder={placeholder.clone()}
+                            value={init}
+                            on:input:target={move |ev| {
+                                input_value.set(ev.target().value().clone());
+                            }}
+                            on:keypress={
+                                let commit = commit.clone();
+                                move |ev| {
+                                    if ev.key() == "Enter" {
+                                        commit();
+                                    }
+                                }
+                            }
+                        />
+                        {button.clone().map(|btn| {
+                            view! {
+                                <button class="rendered-input-button" on:click={move |_| {
+                                    commit();
+                                }}>{btn}</button>
+                            }
+                        })}
+                    </div>
+                }
+                .into_any()
+            }
         }
     }
     let render = {
         let backend = backend.clone();
-        move |comp: &bag_lib::ui::Component| render_static(&dispatch, &backend, comp)
+        move |comp: &bag_lib::ui::Component| render_static(&dispatch, &backend, comp, &path)
     };
 
     let nav_ctx = ctx.clone();

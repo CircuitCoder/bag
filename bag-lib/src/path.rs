@@ -70,7 +70,7 @@ impl<'s> Segment<'s> {
         self.1.get(key).map(|v| v.as_ref())
     }
 
-    pub fn with_arg<'r>(&'r self, key: &'r str, value: Option<&'r str>) -> Segment<'r>
+    pub fn with_arg<'r>(&self, key: &'r str, value: Option<&'r str>) -> Segment<'r>
     where
         's: 'r,
     {
@@ -79,6 +79,19 @@ impl<'s> Segment<'s> {
             new_args.insert(Cow::Borrowed(key), Cow::Borrowed(value));
         } else {
             new_args.remove(key);
+        }
+        Segment(self.0.clone(), new_args)
+    }
+
+    pub fn with_arg_owned<'r>(&self, key: String, value: Option<String>) -> Segment<'r>
+    where
+        's: 'r,
+    {
+        let mut new_args = self.1.clone();
+        if let Some(value) = value {
+            new_args.insert(Cow::Owned(key), Cow::Owned(value));
+        } else {
+            new_args.remove(key.as_str());
         }
         Segment(self.0.clone(), new_args)
     }
@@ -282,5 +295,19 @@ impl<'s> Path<'s> {
         let mut segments = self.segments().to_vec();
         segments.push(seg);
         Path(Cow::Owned(segments))
+    }
+
+    pub fn update(
+        &self,
+        at: usize,
+        update: impl FnOnce(&Segment<'s>) -> Segment<'s>,
+    ) -> Option<Path<'_>> {
+        if at >= self.0.len() {
+            return None;
+        }
+
+        let mut segments = self.segments().to_vec();
+        segments[at] = update(&segments[at]);
+        Some(Path(Cow::Owned(segments)))
     }
 }

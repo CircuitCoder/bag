@@ -12,6 +12,7 @@ pub enum Component {
     Gallery(Gallery),
     Button(Button),
     Box(Box),
+    Input(Input),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,4 +92,33 @@ pub struct Box {
     pub children: Vec<Component>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<Action>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum InputType {
+    Text,
+    Number,
+    Password,
+}
+
+impl InputType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InputType::Text => "text",
+            InputType::Number => "number",
+            InputType::Password => "password",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Input {
+    pub bidir: bool,
+    /// Binding segment, counting from the start of the patth
+    pub segment: usize,
+    /// Name of the bound parameter
+    pub param: String,
+    pub ty: InputType,
+    pub placeholder: Option<String>,
+    pub button: Option<String>,
 }

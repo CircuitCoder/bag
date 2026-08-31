@@ -802,7 +802,7 @@ fn App() -> AnyView {
                 let (target)
             >
                 <div class={move || format!("panel panel-{}", ctx.targets.read().get_persona(&target.path).map(|p| p.as_str()).unwrap_or("unknown"))}>
-                    <panel::Panel data={target.data.read_only()} />
+                    <panel::Panel data={target.data.read_only()} path={target.path.clone()} />
                 </div>
             </For>
         </div>
