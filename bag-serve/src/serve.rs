@@ -704,20 +704,45 @@ async fn raw_file_response(
     }
 }
 
-pub fn build(db: Database, root: PathBuf, thumbnail_concurrency: usize) -> Router {
-    let file_handler = Router::new().fallback(
-        async move |State(state): State<AppState>, uri: Uri, headers: HeaderMap| {
-            let path = uri.path().trim_start_matches('/');
-            raw_file_response(&state.base, path, &headers).await
-        },
-    );
-    let thumbnail_handler = Router::new().fallback(
-        async move |State(state): State<AppState>, uri: Uri, headers: HeaderMap| {
+async fn raw_response(
+    State(state): State<AppState>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response<Body> {
+    let path = uri.path().trim_start_matches('/');
+    let Some((namespace, path)) = path.split_once('/') else {
+        return (axum::http::StatusCode::NOT_FOUND, "Not found").into_response();
+    };
+    let namespace = match Segment::try_from(namespace) {
+        Ok(namespace) => namespace,
+        Err(SegmentParseError::InvalidArgument(arg)) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("Invalid argument: {arg}"),
+            )
+                .into_response();
+        }
+        Err(SegmentParseError::DecodeError(value)) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("Decode error: {value}"),
+            )
+                .into_response();
+        }
+    };
+
+    match namespace.name() {
+        "file" => raw_file_response(&state.base, path, &headers).await,
+        "thumbnail" => {
             let _permit = state.thumbnail_queue.acquire().await;
-            let path = uri.path().trim_start_matches('/');
             thumbnail_response(&state, path, &headers).await
-        },
-    );
+        }
+        _ => (axum::http::StatusCode::NOT_FOUND, "Not found").into_response(),
+    }
+}
+
+pub fn build(db: Database, root: PathBuf, thumbnail_concurrency: usize) -> Router {
+    let raw_handler = Router::new().fallback(raw_response);
     let render_handler = Router::new()
         .fallback(async move |state: State<AppState>, uri: Uri| {
             // Trim prefixing & suffixing "/"
@@ -782,8 +807,7 @@ pub fn build(db: Database, root: PathBuf, thumbnail_concurrency: usize) -> Route
         .allow_headers(Any);
 
     Router::new()
-        .nest("/v1/raw/thumbnail/", thumbnail_handler)
-        .nest("/v1/raw/file/", file_handler)
+        .nest("/v1/raw/", raw_handler)
         .nest("/v1/render/", render_handler)
         .with_state(state)
         .layer(cors)
@@ -792,17 +816,18 @@ pub fn build(db: Database, root: PathBuf, thumbnail_concurrency: usize) -> Route
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, ThumbnailQueue, archive_redirect, is_archive_path, raw_file_response,
+        AppState, ThumbnailQueue, archive_redirect, build, is_archive_path, raw_file_response,
         render_file, thumbnail_lookup, thumbnail_resource, thumbnail_response,
     };
     use crate::db::Database;
     use axum::{
-        body::to_bytes,
-        http::{HeaderMap, header},
+        body::{Body, to_bytes},
+        http::{HeaderMap, Request, header},
     };
     use bag_lib::{action::Action, path::Path, ui::LayoutOrAction};
     use image::{DynamicImage, ImageFormat};
     use std::io::{Cursor, Write};
+    use tower::ServiceExt;
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     fn encrypted_zip_with_file(name: &str, contents: &[u8], password: &str) -> Vec<u8> {
@@ -892,6 +917,62 @@ mod tests {
         headers.insert(header::IF_NONE_MATCH, etag);
         let response = raw_file_response(directory.path(), "hello.txt", &headers).await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
+    async fn raw_router_dispatches_namespaces_with_arguments() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("hello.txt"), b"hello").unwrap();
+        let archive = encrypted_zip_with_file("photo.jpg", b"image contents", "secret");
+        std::fs::write(directory.path().join("outer.zip"), archive).unwrap();
+        let database_path = directory.path().join("database.sqlite");
+        let database = Database::setup(&format!("sqlite:{}", database_path.display()))
+            .await
+            .unwrap();
+        let app = build(database, directory.path().to_path_buf(), 1);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/raw/file,offset=300/hello.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            b"hello".as_slice()
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/raw/file,offset=300/outer.zip/%3A,pw=secret/photo.jpg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+            b"image contents".as_slice()
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/raw/unknown,offset=300/hello.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
