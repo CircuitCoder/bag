@@ -165,7 +165,7 @@ main > .layout-nav {
 
 @media (max-width: 800px) {
   main {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: min-content 1fr min-content;
     grid-template-areas: "nav" "main" "right";
     min-height: 100svh;
@@ -288,7 +288,7 @@ main > .layout-nav {
 .rendered-gallery-header:has(input[value="list"]:checked) +
 .rendered-gallery-items {
   --item-dim: 50px;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .rendered-gallery-header:has(input[value="list"]:checked) +
@@ -296,8 +296,8 @@ main > .layout-nav {
 .rendered-gallery-img {
   width: 100%;
   display: flex;
-  height: 51px;
-  border-bottom: 1px solid rgba(from var(--foreground) r g b / 0.1);
+  align-items: center;
+  height: min-content;
 }
 
 .rendered-gallery-header:has(input[value="list"]:checked) +
@@ -312,11 +312,15 @@ main > .layout-nav {
 .rendered-gallery-img::after {
   position: relative;
   flex: 1;
-  height: 100%;
+  min-height: 50px;
+  height: min-content;
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  padding: 0 10px;
+  padding: 10px 10px;
+  text-wrap: wrap;
+  text-align: left;
+  word-break: break-word;
 }
 
 
