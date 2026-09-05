@@ -36,17 +36,57 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install sqlx-cli
+        run: cargo install --locked sqlx-cli --no-default-features --features sqlite
+
       - name: Prepare SQLx database
+        env:
+          DATABASE_URL: sqlite:${{ github.workspace }}/bag-serve/db.sqlite
         run: |
           rm -f bag-serve/db.sqlite
-          for migration in bag-serve/migrations/*.sql; do
-            sqlite3 bag-serve/db.sqlite < "$migration"
-          done
+          sqlx database create
+          sqlx migrate run --source bag-serve/migrations
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        env:
+          DATABASE_URL: sqlite:${{ github.workspace }}/bag-serve/db.sqlite
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Build workspace
+        env:
+          DATABASE_URL: sqlite:${{ github.workspace }}/bag-serve/db.sqlite
+        run: cargo build --workspace
 
       - name: Run tests
         env:
           DATABASE_URL: sqlite:${{ github.workspace }}/bag-serve/db.sqlite
         run: cargo test --workspace
+
+      - name: Upload SQLx database artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlx-db
+          path: bag-serve/db.sqlite
+
+  nix-flake-check:
+    name: Nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Run flake check
+        run: nix flake check
+
+      - name: Build bag-web in Nix shell
+        run: |
+          nix develop --command bash -lc 'cd bag-web && env -u NO_COLOR trunk build --locked index.html'
 
   build-bag-serve:
     name: Build bag-serve (${{ matrix.arch }})
@@ -56,24 +96,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x86
+          - arch: x86_32
             target: i686-unknown-linux-gnu
             runs_on: ubuntu-latest
-            cross_i686: true
+            cross_target: i686
           - arch: amd64
             target: x86_64-unknown-linux-gnu
             runs_on: ubuntu-latest
-            cross_i686: false
+            cross_target: none
           - arch: aarch64
             target: aarch64-unknown-linux-gnu
             runs_on: ubuntu-24.04-arm
-            cross_i686: false
+            cross_target: none
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install amd64/aarch64 system dependencies
-        if: ${{ !matrix.cross_i686 }}
+      - name: Download SQLx database artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sqlx-db
+          path: bag-serve
+
+      - name: Install native build dependencies
+        if: ${{ matrix.cross_target == 'none' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -91,7 +137,7 @@ jobs:
             sqlite3
 
       - name: Install i686 cross dependencies
-        if: ${{ matrix.cross_i686 }}
+        if: ${{ matrix.cross_target == 'i686' }}
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
@@ -115,19 +161,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Prepare SQLx database
-        run: |
-          rm -f bag-serve/db.sqlite
-          for migration in bag-serve/migrations/*.sql; do
-            sqlite3 bag-serve/db.sqlite < "$migration"
-          done
-
-      - name: Build bag-serve
+      - name: Build bag-serve (x86)
+        if: ${{ matrix.cross_target == 'i686' }}
         env:
           DATABASE_URL: sqlite:${{ github.workspace }}/bag-serve/db.sqlite
           CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER: i686-linux-gnu-gcc
           PKG_CONFIG_ALLOW_CROSS: "1"
-          PKG_CONFIG_PATH: /usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          PKG_CONFIG_LIBDIR_i686_unknown_linux_gnu: /usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig
+        run: cargo build -p bag-serve --release --target ${{ matrix.target }}
+
+      - name: Build bag-serve (native)
+        if: ${{ matrix.cross_target == 'none' }}
+        env:
+          DATABASE_URL: sqlite:${{ github.workspace }}/bag-serve/db.sqlite
         run: cargo build -p bag-serve --release --target ${{ matrix.target }}
 
       - name: Upload bag-serve artifact
@@ -144,20 +190,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install Trunk and wasm-bindgen-cli
-        run: |
-          cargo install --locked trunk --version 0.21.14
-          cargo install --locked wasm-bindgen-cli --version 0.2.125
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Build web frontend
         run: |
-          cd bag-web
-          env -u NO_COLOR trunk build --release --locked index.html --public-url "/${{ github.event.repository.name }}/"
+          nix develop --command bash -lc 'cd bag-web && env -u NO_COLOR trunk build --release --locked index.html --public-url "./"'
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -166,8 +204,8 @@ jobs:
 
   deploy-pages:
     name: Deploy GitHub Pages
-    if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
-    needs: build-web
+    if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    needs: [test, build-bag-serve, build-web, nix-flake-check]
     runs-on: ubuntu-latest
     permissions:
       pages: write
