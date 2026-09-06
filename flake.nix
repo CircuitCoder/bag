@@ -32,7 +32,10 @@
           "rust-src"
           "rustfmt"
         ];
-        targets = ["wasm32-unknown-unknown"];
+        targets = [
+          "wasm32-unknown-unknown"
+          "aarch64-unknown-linux-gnu"
+        ];
       };
       wasmBindgenCli = pkgs.buildWasmBindgenCli rec {
         src = pkgs.fetchCrate {
