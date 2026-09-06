@@ -11,6 +11,7 @@ use leptos::{
     prelude::*,
     task::spawn_local,
 };
+use serde::{Deserialize, Serialize};
 use web_sys::{MutationObserver, wasm_bindgen::prelude::*};
 
 use crate::util::{FetchError, NodeListExt};
@@ -59,8 +60,7 @@ fn set_backend_and_reload(backend: String) {
     web_sys::window().unwrap().location().reload().unwrap();
 }
 
-// TODO: serialize & deserialize
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum GalleryMode {
     Grid,
     List,
@@ -72,10 +72,24 @@ struct Settings {
 }
 
 impl Settings {
-    fn new() -> Self {
-        Self {
-            gallery_mode: RwSignal::new(GalleryMode::Grid),
-        }
+    fn from_storage(local_storage: web_sys::Storage) -> Self {
+        let gallery_mode = local_storage
+            .get_item("galleryMode")
+            .unwrap()
+            .and_then(|mode| serde_json::from_str::<GalleryMode>(&mode).ok())
+            .unwrap_or(GalleryMode::Grid);
+        let ret = Self {
+            gallery_mode: RwSignal::new(gallery_mode),
+        };
+        Effect::new(move |_| {
+            local_storage
+                .set_item(
+                    "galleryMode",
+                    &serde_json::to_string(&ret.gallery_mode.get()).unwrap(),
+                )
+                .unwrap();
+        });
+        ret
     }
 }
 
@@ -105,7 +119,7 @@ impl Context {
             }),
             backend,
             cfg_dialog: Arc::new(NodeRef::new()),
-            settings: Settings::new(),
+            settings: Settings::from_storage(local_storage()),
         };
         ret.subscribe(&ret.targets.read_untracked().current, retire_rx);
         ret
