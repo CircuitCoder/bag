@@ -34,7 +34,6 @@
         ];
         targets = [
           "wasm32-unknown-unknown"
-          "i686-unknown-linux-gnu"
           "aarch64-unknown-linux-gnu"
         ];
       };
