@@ -851,8 +851,8 @@ mod tests {
     #[test]
     fn builds_canonical_archive_redirects() {
         let path = Path::try_from("file/outer.zip/%3A/inner.zip").unwrap();
-        let LayoutOrAction::Action(Action::Navigate { to }) = archive_redirect(&path) else {
-            panic!("archive redirect was not a navigation action");
+        let LayoutOrAction::Action(Action::Redirect { to }) = archive_redirect(&path) else {
+            panic!("archive redirect was not a redirect action");
         };
         assert_eq!(to, "file/outer.zip/%3A/inner.zip/%3A");
     }
