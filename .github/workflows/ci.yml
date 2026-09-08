@@ -123,7 +123,7 @@ jobs:
 
       - name: Build web frontend
         run: |
-          nix develop --command bash -lc 'cd bag-web && env -u NO_COLOR trunk build --release --locked --public-url "./"'
+          nix develop --command bash -lc 'cd bag-web && env -u NO_COLOR trunk build --release --locked --public-url "/"'
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
