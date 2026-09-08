@@ -617,7 +617,6 @@ fn App() -> AnyView {
 
     let backends = RwSignal::new(read_backends(&storage));
     Effect::new({
-        let backends = backends.clone();
         let storage = local_storage();
         move |_| {
             write_backends(&storage, &backends.get());
@@ -636,7 +635,7 @@ fn App() -> AnyView {
 
     let Some((backend, initial_path)) = backend else {
         // If the path is not "/", goto "/"
-        if full_path != "" {
+        if !full_path.is_empty() {
             web_sys::window().unwrap().location().assign("/").unwrap();
         }
         return view! {
