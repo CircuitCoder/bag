@@ -656,13 +656,24 @@ fn App() -> AnyView {
     {
         let ctx = ctx.clone();
         let closure = Closure::wrap(Box::new(move |_event: web_sys::PopStateEvent| {
-            let new_path = web_sys::window()
+            let full_path = web_sys::window()
                 .unwrap()
                 .location()
                 .pathname()
                 .map(|e| e.trim_start_matches('/').trim_end_matches("/").to_owned())
                 .unwrap_or_else(|_| String::new());
-            ctx.navigate(new_path, NavigateType::Pop);
+            if let Some((backend, path)) = parse_backend(&full_path)
+                && backend == ctx.backend_hash
+            {
+                ctx.navigate(path.to_owned(), NavigateType::Pop);
+            } else {
+                // Handle as normal redirect
+                web_sys::window()
+                    .unwrap()
+                    .location()
+                    .assign(full_path.as_str())
+                    .unwrap();
+            }
         }) as Box<dyn FnMut(_)>);
         web_sys::window()
             .unwrap()
