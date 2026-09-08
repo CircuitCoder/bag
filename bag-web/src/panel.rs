@@ -28,7 +28,7 @@ pub fn Panel(
 
     let ctx: Context =
         use_context().expect("Panel component must be used within a Context provider");
-    let backend = ctx.backend.clone();
+    let backend = ctx.backend_url.clone();
     let c = ctx.clone();
     let dispatch = Action::new(move |a: &bag_lib::action::Action| {
         let a = a.clone();

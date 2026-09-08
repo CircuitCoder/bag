@@ -19,45 +19,78 @@ use crate::util::{FetchError, NodeListExt};
 mod panel;
 mod util;
 
-const BACKEND_KEY: &str = "backend";
-const RECENT_BACKENDS_KEY: &str = "recentBackends";
+const BACKENDS_KEY: &str = "backends";
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Hash)]
+struct Backend {
+    url: String,
+    hash: String,
+    // Last path it accessed
+    last: String,
+}
+
 type AnimationFrameHandler = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
 
 fn local_storage() -> web_sys::Storage {
     web_sys::window().unwrap().local_storage().unwrap().unwrap()
 }
 
-fn read_recent_backends(local_storage: &web_sys::Storage) -> Vec<String> {
+fn read_backends(local_storage: &web_sys::Storage) -> Vec<Backend> {
     local_storage
-        .get_item(RECENT_BACKENDS_KEY)
+        .get_item(BACKENDS_KEY)
         .unwrap()
-        .and_then(|recent| serde_json::from_str::<Vec<String>>(&recent).ok())
+        .and_then(|recent| serde_json::from_str::<Vec<Backend>>(&recent).ok())
         .unwrap_or_default()
 }
 
-fn write_recent_backends(local_storage: &web_sys::Storage, recent_backends: &[String]) {
+fn write_backends(local_storage: &web_sys::Storage, backends: &[Backend]) {
     local_storage
-        .set_item(
-            RECENT_BACKENDS_KEY,
-            &serde_json::to_string(recent_backends).unwrap(),
-        )
+        .set_item(BACKENDS_KEY, &serde_json::to_string(backends).unwrap())
         .unwrap();
 }
 
-fn init_recent_backends(local_storage: &web_sys::Storage, backend: Option<&str>) -> Vec<String> {
-    let mut recent_backends = read_recent_backends(local_storage);
-    if let Some(backend) = backend {
-        recent_backends.retain(|recent_backend| recent_backend != backend);
-        recent_backends.insert(0, backend.to_owned());
-        write_recent_backends(local_storage, &recent_backends);
-    }
-    recent_backends
-}
-
-fn set_backend_and_reload(backend: String) {
+fn goto_backend(backend: String) {
     let local_storage = local_storage();
-    local_storage.set_item(BACKEND_KEY, &backend).unwrap();
-    web_sys::window().unwrap().location().reload().unwrap();
+    // First, read all current backends
+    let backends = read_backends(&local_storage);
+    // Check if the backend already exists
+    let cur = backends.iter().find(|b| b.url == backend);
+    let target = if let Some(backend) = cur {
+        let hash = backend.hash.clone();
+        let target = format!("/{}/{}", hash, backend.last);
+        // Move the backend to the front of the list
+        let mut new_backends = Vec::with_capacity(backends.len());
+        new_backends.push(backend.clone());
+        for backend in backends {
+            if backend.hash != hash {
+                new_backends.push(backend);
+            }
+        }
+        write_backends(&local_storage, &new_backends);
+        target
+    } else {
+        // New backend
+        use std::hash::{Hash, Hasher};
+        let mut new_backends = Vec::with_capacity(backends.len() + 1);
+        let mut hasher = std::hash::DefaultHasher::new();
+        backend.hash(&mut hasher);
+        let hash = format!("{:x}", hasher.finish());
+        // Hex encode
+        let target = format!("/{}", hash);
+        let backend = Backend {
+            url: backend,
+            hash,
+            last: String::new(),
+        };
+        new_backends.push(backend);
+        new_backends.extend(backends);
+        write_backends(&local_storage, &new_backends);
+        target
+    };
+    web_sys::window()
+        .unwrap()
+        .location()
+        .assign(&target)
+        .unwrap();
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,7 +129,8 @@ impl Settings {
 #[derive(Clone)]
 struct Context {
     targets: RwSignal<RenderTargetSet>,
-    backend: String,
+    backend_url: String,
+    backend_hash: String,
     cfg_dialog: Arc<NodeRef<leptos::html::Dialog>>,
     settings: Settings,
 }
@@ -108,16 +142,17 @@ enum NavigateType {
 }
 
 impl Context {
-    pub fn new(backend: String, init: String) -> Self {
+    pub fn new(backend: Backend, init: String) -> Self {
         let (retire_tx, retire_rx) = futures::channel::oneshot::channel();
-        let cur = RenderTarget::new(&backend, init, Some(retire_tx));
+        let cur = RenderTarget::new(&backend.url, init, Some(retire_tx));
         let ret = Self {
             targets: RwSignal::new(RenderTargetSet {
                 current: cur,
                 next: None,
                 prev: None,
             }),
-            backend,
+            backend_url: backend.url,
+            backend_hash: backend.hash,
             cfg_dialog: Arc::new(NodeRef::new()),
             settings: Settings::from_storage(local_storage()),
         };
@@ -148,14 +183,22 @@ impl Context {
                 .unwrap()
                 .history()
                 .unwrap()
-                .push_state_with_url(&JsValue::NULL, "", Some(&format!("/{}", p)))
+                .push_state_with_url(
+                    &JsValue::NULL,
+                    "",
+                    Some(&format!("/{}/{}", self.backend_hash, p)),
+                )
                 .unwrap();
         } else if matches!(ty, NavigateType::Replace) {
             web_sys::window()
                 .unwrap()
                 .history()
                 .unwrap()
-                .replace_state_with_url(&JsValue::NULL, "", Some(&format!("/{}", p)))
+                .replace_state_with_url(
+                    &JsValue::NULL,
+                    "",
+                    Some(&format!("/{}/{}", self.backend_hash, p)),
+                )
                 .unwrap();
         }
 
@@ -220,7 +263,7 @@ impl Context {
 
     fn initiate(&self, path: String) -> RenderTarget {
         let (retire_tx, retire_rx) = futures::channel::oneshot::channel();
-        let target = RenderTarget::new(&self.backend, path, Some(retire_tx));
+        let target = RenderTarget::new(&self.backend_url, path, Some(retire_tx));
         self.subscribe(&target, retire_rx);
         target
     }
@@ -490,81 +533,123 @@ fn swipe_decide(offset: f64, velocity: f64, threshold: f64) -> SwipeDecision {
     }
 }
 
+fn parse_backend(path: &str) -> Option<(&str, &str)> {
+    let mut parts = path.splitn(2, '/');
+    let hash = parts.next()?;
+    let rest = parts.next().unwrap_or("");
+    // Check hash format
+    if hash.len() != 16 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((hash, rest))
+}
+
+fn render_backend_fragment(backends: RwSignal<Vec<Backend>>) -> impl IntoView {
+    let backend_input = NodeRef::<Input>::new();
+
+    view! {
+        <h2>Backend</h2>
+        <div class="input-row">
+            <input node_ref=backend_input type="text" placeholder="Backend URL" />
+            <button
+                on:click=move |_| {
+                    if let Some(input) = backend_input.get() {
+                        goto_backend(input.value());
+                    }
+                }
+            >Set Backend</button>
+        </div>
+        <h3>Recent Backends</h3>
+        <For
+            each=move || backends.get()
+            key=|backend| backend.clone()
+            let(backend)
+        >
+            <div
+                class="backend-row"
+                on:click={
+                    let url = backend.url.clone();
+                    move |_| {
+                        goto_backend(url.clone());
+                    }
+                }
+            >
+                <span class="backend-url">{backend.url.clone()}</span>
+                <button
+                    on:click={
+                        let hash = backend.hash.clone();
+                        move |ev| {
+                            ev.stop_propagation();
+                            backends.update(|backends| {
+                                backends.retain(|b| b.hash != hash);
+                            });
+                        }
+                    }
+                >Delete</button>
+            </div>
+        </For>
+        <button
+            on:click={move |_| {
+                if web_sys::window().unwrap().confirm_with_message("Confirm? This will refresh the page.") != Ok(true) {
+                    return;
+                }
+                let local_storage = local_storage();
+                local_storage.remove_item(BACKENDS_KEY).unwrap();
+                // Refresh
+                web_sys::window().unwrap().location().assign("/").unwrap();
+            }}
+        >Clear Backend</button>
+    }
+}
+
 #[component]
 fn App() -> AnyView {
     console_error_panic_hook::set_once();
     web_sys::console::log_1(&"App mounted".into());
     let storage = local_storage();
-    let backend = storage.get_item(BACKEND_KEY).unwrap();
-    let recent_backends = RwSignal::new(init_recent_backends(&storage, backend.as_deref()));
-    let backend_input = NodeRef::<Input>::new();
-
-    let render_backend_fragment = move || {
-        view! {
-            <h2>Backend</h2>
-            <div class="input-row">
-                <input node_ref=backend_input type="text" placeholder="Backend URL" />
-                <button
-                    on:click=move |_| {
-                        if let Some(input) = backend_input.get() {
-                            set_backend_and_reload(input.value());
-                        }
-                    }
-                >Set Backend</button>
-            </div>
-            <h3>Recent Backends</h3>
-            <For
-                each=move || recent_backends.get()
-                key=|backend| backend.clone()
-                let(backend)
-            >
-                <div
-                    class="backend-row"
-                    on:click={
-                        let backend = backend.clone();
-                        move |_| {
-                            set_backend_and_reload(backend.clone());
-                        }
-                    }
-                >
-                    <span class="backend-url">{backend.clone()}</span>
-                    <button
-                        on:click={
-                            let backend = backend.clone();
-                            move |ev| {
-                                ev.stop_propagation();
-                                let local_storage = local_storage();
-                                recent_backends.update(|recent_backends| {
-                                    recent_backends.retain(|recent_backend| recent_backend != &backend);
-                                    write_recent_backends(&local_storage, recent_backends);
-                                });
-                            }
-                        }
-                    >Delete</button>
-                </div>
-            </For>
-        }
-    };
-
-    let Some(backend) = backend else {
-        return view! {
-            <main class="backend-init">
-                {render_backend_fragment()}
-            </main>
-        }
-        .into_any();
-    };
-    web_sys::console::log_1(&format!("Using backend: {}", backend).into());
-    // FIXME: dynamic backend
-
-    let initial_path = web_sys::window()
+    let full_path = web_sys::window()
         .unwrap()
         .location()
         .pathname()
         .map(|e| e.trim_start_matches('/').trim_end_matches("/").to_owned())
         .unwrap_or_else(|_| String::new());
+    web_sys::console::log_1(&format!("Full path: {}", full_path).into());
 
-    let ctx = Context::new(backend, initial_path);
+    let backends = RwSignal::new(read_backends(&storage));
+    Effect::new({
+        let backends = backends.clone();
+        let storage = local_storage();
+        move |_| {
+            write_backends(&storage, &backends.get());
+        }
+    });
+
+    // The path should always be in format "<backend hash>/<path>". If no hash is detected or the backend does not exist, it should either:
+    // - Pick the most recent backend and redirect it there.
+    // - If no recent backend is available, render the initial setup screen
+
+    let backend = parse_backend(&full_path).and_then(|(b, p)| {
+        let backends = backends.get_untracked();
+        let b = backends.iter().find(|e| e.hash == b)?;
+        Some((b.clone(), p))
+    });
+
+    let Some((backend, initial_path)) = backend else {
+        // If the path is not "/", goto "/"
+        if full_path != "" {
+            web_sys::window().unwrap().location().assign("/").unwrap();
+        }
+        return view! {
+            <main class="backend-init">
+                {render_backend_fragment(backends)}
+            </main>
+        }
+        .into_any();
+    };
+    web_sys::console::log_1(&format!("Using backend: {}", backend.url).into());
+    // FIXME: dynamic backend
+
+    let ctx = Context::new(backend, initial_path.to_owned());
     provide_context(ctx.clone());
 
     // Listen for popstate events to handle browser navigation (back/forward)
@@ -720,18 +805,7 @@ fn App() -> AnyView {
             node_ref=*ctx.cfg_dialog
             closedby="any"
         >
-            {render_backend_fragment()}
-            <button
-                on:click={move |_| {
-                    if web_sys::window().unwrap().confirm_with_message("Confirm? This will refresh the page.") != Ok(true) {
-                        return;
-                    }
-                    let local_storage = local_storage();
-                    local_storage.remove_item(BACKEND_KEY).unwrap();
-                    // Refresh
-                    web_sys::window().unwrap().location().reload().unwrap();
-                }}
-            >Clear Backend</button>
+            {render_backend_fragment(backends)}
         </dialog>
         <div class="swipe-root"
             node_ref=root

@@ -8,8 +8,9 @@ leptos = { version = "0.8.19", features = ["csr"] }
 leptos_router = "0.8.13"
 serde = "1.0"
 serde_json = "1.0.150"
-web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlInputElement", 'Headers', 'Request', 'RequestInit', 'RequestMode', 'Response', 'Performance', 'MutationObserver', 'MutationObserverInit', 'MutationRecord', 'Node', 'NodeList'] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "HtmlInputElement", 'Headers', 'Request', 'RequestInit', 'RequestMode', 'Response', 'Performance', 'MutationObserver', 'MutationObserverInit', 'MutationRecord', 'Node', 'NodeList', 'Crypto'] }
 bag-lib = { path = "../bag-lib" }
 mime_guess = { version = "2.0.5", default-features = false }
 futures = { version = "0.3.32", default-features = false, features = ["alloc"] }
 console_error_panic_hook = "0.1.7"
+hex = "0.4.3"

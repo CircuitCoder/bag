@@ -435,6 +435,7 @@ dependencies = [
  "bag-lib",
  "console_error_panic_hook",
  "futures",
+ "hex",
  "leptos",
  "leptos_router",
  "mime_guess",
