@@ -6,6 +6,7 @@ members = ["bag-fs","bag-lib", "bag-serve", "bag-web"]
 axum = "0.8.9"
 tokio = "1.52.3"
 tracing = "0.1.44"
+infer = "0.22.0"
 
 [workspace.package]
 version = "0.3.1"

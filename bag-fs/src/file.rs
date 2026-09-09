@@ -30,22 +30,6 @@ impl<'a> File<'a> {
     }
 }
 
-/*
-enum Archive<'a> {
-    Unopen,
-    Zip(zip::ZipArchive<&'a mut File<'a>>)
-}
-
-impl<'a> Archive<'a> {
-    fn assume_zip(&mut self) -> &mut zip::ZipArchive<&'a mut File<'a>> {
-        match self {
-            Archive::Unopen => unreachable!(),
-            Archive::Zip(arc) => arc,
-        }
-    }
-}
-*/
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveEntry {
     pub name: String,
@@ -179,9 +163,26 @@ pub enum ArchiveType {
     Zip,
 }
 
+pub trait EndsWithExt {
+    fn ends_with_ext(&self, ext: &str) -> bool;
+}
+
+impl EndsWithExt for str {
+    fn ends_with_ext(&self, ext: &str) -> bool {
+        self.ends_with(ext)
+    }
+}
+
+impl EndsWithExt for OsStr {
+    fn ends_with_ext(&self, ext: &str) -> bool {
+        // TODO: just compare
+        self.to_str().map_or(false, |s| s.ends_with(ext))
+    }
+}
+
 impl ArchiveType {
-    pub fn from_name(name: &str) -> Option<Self> {
-        if name.ends_with(".zip") {
+    pub fn from_path<S: EndsWithExt + ?Sized>(p: &S) -> Option<Self> {
+        if p.ends_with_ext(".zip") {
             // TODO: cases
             Some(Self::Zip)
         } else {
@@ -189,12 +190,27 @@ impl ArchiveType {
         }
     }
 
-    pub fn from_path(name: &std::path::Path) -> Option<Self> {
-        if name.extension() == Some(OsStr::new("zip")) {
-            // TODO: cases
-            Some(Self::Zip)
+    pub fn from_read<R: Read + Seek>(reader: &mut R) -> std::io::Result<Option<Self>> {
+        let cur = reader.stream_position()?;
+        // Read at most 8192 bytes
+        let mut buf = [0u8; 8192];
+        let n = reader.take(8192).read(&mut buf)?;
+        let inferred = infer::get(&buf[..n]);
+        reader.seek(std::io::SeekFrom::Start(cur))?;
+        Ok(inferred.and_then(|i| match i.mime_type() {
+            "application/zip" => Some(Self::Zip),
+            _ => None,
+        }))
+    }
+
+    pub fn from_path_and_read<S: EndsWithExt + ?Sized, R: Read + Seek>(
+        path: &S,
+        reader: &mut R,
+    ) -> std::io::Result<Option<Self>> {
+        if let Some(ty) = Self::from_path(path) {
+            Ok(Some(ty))
         } else {
-            None
+            Self::from_read(reader)
         }
     }
 }
@@ -325,8 +341,8 @@ impl<'a> File<'a> {
             return Err(crate::Error::NotArchive(total.len() - leading_offset));
         };
         let mut file = open_subpath(&mut arc, f, pw, total.len() - offset)?;
-        let subarc = File::Buf(seekbuf::Seekbuf::new(&mut file));
-        let ty = ArchiveType::from_name(leading_bare)
+        let mut subarc = File::Buf(seekbuf::Seekbuf::new(&mut file));
+        let ty = ArchiveType::from_path_and_read(leading_bare, &mut subarc)?
             .ok_or(crate::Error::NotArchive(total.len() - leading_offset))?;
         subarc.descend_impl(ty, total, leading_offset, handler)
     }

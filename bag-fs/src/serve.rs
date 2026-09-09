@@ -174,7 +174,7 @@ where
     }
 
     // Read file out
-    let file = file.into_std().await;
+    let mut file = file.into_std().await;
     let Some(subpath) = subpath else {
         let ctx = RenderContext {
             file: FileThunk::Fs(file),
@@ -184,7 +184,9 @@ where
     };
 
     // Descend
-    let ty = ArchiveType::from_path(&base).ok_or(crate::Error::NotArchive(subpath.len()))?;
+    // TODO: move into sync helper
+    let ty = ArchiveType::from_path_and_read(base.as_os_str(), &mut file)?
+        .ok_or(crate::Error::NotArchive(subpath.len()))?;
     let ctx = RenderContext {
         file: FileThunk::Nested(file, ty, subpath),
         etag: encoded_etag,
