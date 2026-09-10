@@ -46,6 +46,7 @@ fn archive_child_path<'a>(path: &Path<'a>, name: &str) -> Path<'a> {
 
 fn is_archive_path(path: &str) -> bool {
     mime_guess::from_path(path).first_or_octet_stream() == "application/zip"
+    || path.ends_with(".zi") // Hacking for some corner case. TODO: actually guess from file content
 }
 
 pub fn render_archive<Thumbnail>(
