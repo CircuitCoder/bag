@@ -24,14 +24,17 @@ use bag_lib::{
     action::Action,
     path::{Path, Segment, SegmentParseError},
     ui::{
-        Button, Component, Gallery, GalleryImage, GalleryImageType, Image, Layout, LayoutOrAction,
-        Text,
+        Button, Component, Gallery, GalleryImage, GalleryImageType, Image, Input, InputType,
+        Layout, LayoutOrAction, Text,
     },
 };
 use chrono::{DateTime, Utc};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::db::Database;
+use crate::{
+    db::Database,
+    filter::{parse_filter, push_filename_filters},
+};
 
 #[derive(Clone)]
 struct AppState {
@@ -299,8 +302,6 @@ pub async fn render_file(
 
     // Fetch self
     let result = if file.is_directory {
-        // TODO: filter
-
         let limit = path
             .last()
             .unwrap()
@@ -315,6 +316,15 @@ pub async fn render_file(
             .unwrap_or(0) as i64;
         let sort = path.last().unwrap().arg("sort");
         let order = path.last().unwrap().arg("order").unwrap_or("desc");
+        let filter = path.last().unwrap().arg("filter").unwrap_or("");
+        let filters = match parse_filter(filter) {
+            Ok(filters) => filters,
+            Err(error) => {
+                return Ok(Some(
+                    (axum::http::StatusCode::BAD_REQUEST, error).into_response(),
+                ));
+            }
+        };
         if !(order.eq_ignore_ascii_case("desc") || order.eq_ignore_ascii_case("asc")) {
             return Ok(Some(
                 (
@@ -335,18 +345,21 @@ pub async fn render_file(
             is_directory: bool,
         }
 
-        let children = sqlx::query_as::<_, DirectoryEntry>(&format!(
-            r#"
-            SELECT path, is_directory FROM files WHERE parent = ?
-            ORDER BY is_directory DESC, {orderby_directive}
-            LIMIT ? + 1 OFFSET ?
-        "#
-        ))
-        .bind(file.id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(db.as_ref())
-        .await?;
+        let mut query =
+            sqlx::QueryBuilder::new("SELECT path, is_directory FROM files WHERE parent = ");
+        query.push_bind(file.id);
+        push_filename_filters(&mut query, &filters, &outer);
+        query
+            .push(format!(
+                " ORDER BY is_directory DESC, {orderby_directive} LIMIT "
+            ))
+            .push_bind(limit)
+            .push(" + 1 OFFSET ")
+            .push_bind(offset);
+        let children = query
+            .build_query_as::<DirectoryEntry>()
+            .fetch_all(db.as_ref())
+            .await?;
 
         let is_start = offset == 0;
         let is_end = children.len() <= limit as usize;
@@ -387,10 +400,20 @@ pub async fn render_file(
 
         Layout {
             top: vec![],
-            main: vec![Component::Gallery(Gallery {
-                can_order: true,
-                images,
-            })],
+            main: vec![
+                Component::Input(Input {
+                    bidir: true,
+                    segment: path.len() - 1,
+                    param: "filter".to_owned(),
+                    ty: InputType::Text,
+                    placeholder: Some("RegExp".to_owned()),
+                    button: Some("Filter".to_owned()),
+                }),
+                Component::Gallery(Gallery {
+                    can_order: true,
+                    images,
+                }),
+            ],
             metadata,
             left: (!is_start).then(|| {
                 let offset_str;
@@ -424,6 +447,20 @@ pub async fn render_file(
             .and_then(|parent| parent.last())
             .and_then(|segment| segment.arg("order"))
             .unwrap_or("desc");
+        let parent_filter = parent
+            .as_ref()
+            .and_then(|parent| parent.last())
+            .and_then(|segment| segment.arg("filter"))
+            .unwrap_or("");
+        let filters = match parse_filter(parent_filter) {
+            Ok(filters) => filters,
+            Err(error) => {
+                return Ok(Some(
+                    (axum::http::StatusCode::BAD_REQUEST, error).into_response(),
+                ));
+            }
+        };
+        let bare_parent = outer.rsplit_once('/').map_or("", |(parent, _)| parent);
         if !(parent_order.eq_ignore_ascii_case("desc") || parent_order.eq_ignore_ascii_case("asc"))
         {
             return Ok(Some(
@@ -446,38 +483,42 @@ pub async fn render_file(
             };
         // Compare the complete sort key so equal timestamps still have unique neighbors.
         // Read the current key in SQL to preserve SQLite's stored timestamp format.
-        let prev = sqlx::query_scalar::<_, String>(&format!(
+        let mut prev_query = sqlx::QueryBuilder::new("SELECT path FROM files WHERE parent = ");
+        prev_query.push_bind(parent_id);
+        push_filename_filters(&mut prev_query, &filters, bare_parent);
+        prev_query.push(format!(
             r#"
-                SELECT path FROM files
-                WHERE parent = ?
                     AND is_directory = FALSE
                     AND substr(lower(path), -4) != '.zip'
                     AND ({primary}, {secondary}) {prev_operator}
-                        (SELECT {primary}, {secondary} FROM files WHERE id = ?)
-                ORDER BY {primary} {prev_order}, {secondary} {prev_order}
-                LIMIT 1
+                        (SELECT {primary}, {secondary} FROM files WHERE id =
             "#
-        ))
-        .bind(parent_id)
-        .bind(file.id)
-        .fetch_optional(db.as_ref())
-        .await?;
-        let next = sqlx::query_scalar::<_, String>(&format!(
+        ));
+        prev_query.push_bind(file.id).push(format!(
+            ") ORDER BY {primary} {prev_order}, {secondary} {prev_order} LIMIT 1"
+        ));
+        let prev = prev_query
+            .build_query_scalar::<String>()
+            .fetch_optional(db.as_ref())
+            .await?;
+        let mut next_query = sqlx::QueryBuilder::new("SELECT path FROM files WHERE parent = ");
+        next_query.push_bind(parent_id);
+        push_filename_filters(&mut next_query, &filters, bare_parent);
+        next_query.push(format!(
             r#"
-                SELECT path FROM files
-                WHERE parent = ?
                     AND is_directory = FALSE
                     AND substr(lower(path), -4) != '.zip'
                     AND ({primary}, {secondary}) {next_operator}
-                        (SELECT {primary}, {secondary} FROM files WHERE id = ?)
-                ORDER BY {primary} {next_order}, {secondary} {next_order}
-                LIMIT 1
+                        (SELECT {primary}, {secondary} FROM files WHERE id =
             "#
-        ))
-        .bind(parent_id)
-        .bind(file.id)
-        .fetch_optional(db.as_ref())
-        .await?;
+        ));
+        next_query.push_bind(file.id).push(format!(
+            ") ORDER BY {primary} {next_order}, {secondary} {next_order} LIMIT 1"
+        ));
+        let next = next_query
+            .build_query_scalar::<String>()
+            .fetch_optional(db.as_ref())
+            .await?;
         Layout {
             top: vec![],
             main: vec![Component::Image(Image {
@@ -485,8 +526,9 @@ pub async fn render_file(
                 mime: None,
             })],
             metadata,
-            left: prev.map(|p| parent_path.clone() + p.rsplit("/").next().unwrap()),
-            right: next.map(|n| parent_path + n.rsplit("/").next().unwrap()),
+            left: prev
+                .map(|p| parent_path.clone() + &urlencoding::encode(p.rsplit('/').next().unwrap())),
+            right: next.map(|n| parent_path + &urlencoding::encode(n.rsplit('/').next().unwrap())),
         }
     };
 
@@ -912,6 +954,184 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    fn gallery(layout: &Layout) -> &bag_lib::ui::Gallery {
+        layout
+            .main
+            .iter()
+            .find_map(|component| match component {
+                Component::Gallery(gallery) => Some(gallery),
+                _ => None,
+            })
+            .expect("expected gallery")
+    }
+
+    #[tokio::test]
+    async fn filters_filenames_in_listings_and_sibling_navigation() {
+        for prefix in ["", "needle猫"] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = Database::setup("sqlite::memory:").await.unwrap();
+            sqlx::query(
+                "INSERT INTO files (id, path, mtime, length, scan_id, is_directory)
+                 VALUES (1, ?, '2026-01-01 00:00:00', 0, 1, TRUE)",
+            )
+            .bind(prefix)
+            .execute(database.as_ref())
+            .await
+            .unwrap();
+            for (name, day, is_directory) in [
+                ("a needle \"tag\".jpg", 2, false),
+                ("b skip \"tag\".jpg", 1, false),
+                ("c needle \"tag\".jpg", 2, false),
+                ("d needle other.jpg", 3, false),
+                ("e needle \"tag\".png", 4, false),
+                ("f needle \"tag\".jpg", 1, false),
+                ("g needle \"tag\".ZIP", 2, false),
+                ("needle-dir", 1, true),
+                ("literal.a%_b.jpg", 1, false),
+                (r"back\slash.jpg", 1, false),
+            ] {
+                let stored_path = if prefix.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                sqlx::query(
+                    "INSERT INTO files (path, mtime, length, scan_id, is_directory, parent)
+                     VALUES (?, ?, 0, 1, ?, 1)",
+                )
+                .bind(stored_path)
+                .bind(format!("2026-01-{day:02} 00:00:00"))
+                .bind(is_directory)
+                .execute(database.as_ref())
+                .await
+                .unwrap();
+            }
+            let app = build(database, directory.path().to_path_buf(), 1);
+            let base = if prefix.is_empty() {
+                "file".to_owned()
+            } else {
+                format!("file/{}", urlencoding::encode(prefix))
+            };
+            let base = Path::try_from(base.as_str()).unwrap();
+            let filter = r#"needle "\"tag\"" /\.jpg$/"#;
+            for (sort, order, expected) in [
+                ("path", "asc", ["a", "c", "f"]),
+                ("path", "desc", ["f", "c", "a"]),
+                ("mtime", "asc", ["f", "a", "c"]),
+                ("mtime", "desc", ["c", "a", "f"]),
+            ] {
+                let first_page = base
+                    .with_arg("filter", Some(filter))
+                    .with_arg("sort", Some(sort))
+                    .with_arg("order", Some(order))
+                    .with_arg("limit", Some("1"))
+                    .to_string();
+                let mut page = first_page.clone();
+                for (index, letter) in expected.iter().enumerate() {
+                    let layout = render_layout(&app, &page).await;
+                    let images = &gallery(&layout).images;
+                    assert_eq!(images.len(), 1);
+                    assert_eq!(images[0].name, format!("{letter} needle \"tag\".jpg"));
+                    assert_eq!(layout.left.is_none(), index == 0);
+                    if let Some(previous) = &layout.left {
+                        let previous = render_layout(&app, previous).await;
+                        assert_eq!(
+                            gallery(&previous).images[0].name,
+                            format!("{} needle \"tag\".jpg", expected[index - 1])
+                        );
+                    }
+                    let Some(Action::Navigate { to }) = &images[0].action else {
+                        panic!("expected navigation")
+                    };
+                    // A file's own filter must not override the parent directory's filter.
+                    let to = Path::try_from(to.as_str())
+                        .unwrap()
+                        .with_arg("filter", Some("ignored"))
+                        .to_string();
+                    let file_layout = render_layout(&app, &to).await;
+                    let parent = Path::try_from(page.as_str()).unwrap().to_string();
+                    let sibling = |letter| {
+                        format!(
+                            "{parent}/{}",
+                            urlencoding::encode(&format!("{letter} needle \"tag\".jpg"))
+                        )
+                    };
+                    assert_eq!(
+                        file_layout.left,
+                        index.checked_sub(1).map(|i| sibling(expected[i]))
+                    );
+                    assert_eq!(
+                        file_layout.right,
+                        expected.get(index + 1).map(|letter| sibling(*letter))
+                    );
+                    for neighbor in [file_layout.left, file_layout.right].into_iter().flatten() {
+                        render_layout(&app, &neighbor).await;
+                    }
+                    assert_eq!(layout.right.is_none(), index == expected.len() - 1);
+                    if let Some(next) = layout.right {
+                        page = next;
+                    }
+                }
+            }
+
+            for (filter, expected) in [
+                ("needle猫", vec![]),
+                ("NEEDLE", vec![]),
+                (".a%_b", vec!["literal.a%_b.jpg"]),
+                (r#""back\\slash""#, vec![r"back\slash.jpg"]),
+                (r"/^c needle/", vec!["c needle \"tag\".jpg"]),
+                (r"/needle\/猫/", vec![]),
+                (r#""' OR 1=1 --""#, vec![]),
+            ] {
+                let path = base.with_arg("filter", Some(filter)).to_string();
+                let layout = render_layout(&app, &path).await;
+                let names: Vec<_> = gallery(&layout)
+                    .images
+                    .iter()
+                    .map(|image| image.name.as_str())
+                    .collect();
+                assert_eq!(names, expected, "{prefix}: {filter}");
+                let file = format!("{path}/{}", urlencoding::encode("a needle \"tag\".jpg"));
+                let layout = render_layout(&app, &file).await;
+                for neighbor in [layout.left, layout.right].into_iter().flatten() {
+                    let parsed = Path::try_from(neighbor.as_str()).unwrap();
+                    assert!(
+                        expected.contains(&parsed.last().unwrap().name()),
+                        "{neighbor}"
+                    );
+                }
+            }
+            for filter in ["", " \t\u{2003}", r#""" //"#] {
+                let layout =
+                    render_layout(&app, &base.with_arg("filter", Some(filter)).to_string()).await;
+                assert_eq!(gallery(&layout).images.len(), 10);
+            }
+            for filter in ["\"unclosed", "/unclosed", "/[/", "/\\q/"] {
+                let path = base.with_arg("filter", Some(filter)).to_string();
+                for path in [
+                    path.clone(),
+                    format!("{path}/{}", urlencoding::encode("a needle \"tag\".jpg")),
+                ] {
+                    let response = app
+                        .clone()
+                        .oneshot(
+                            Request::builder()
+                                .uri(format!("/v1/render/{path}"))
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        response.status(),
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "{filter}"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn directory_order_and_sibling_navigation_agree() {
         let directory = tempfile::tempdir().unwrap();
@@ -972,9 +1192,7 @@ mod tests {
             loop {
                 let layout = render_layout(&app, &page_path).await;
                 assert_eq!(layout.left.is_none(), names.is_empty());
-                let Component::Gallery(gallery) = &layout.main[0] else {
-                    panic!("expected gallery");
-                };
+                let gallery = gallery(&layout);
                 assert!(gallery.images.len() <= 2);
                 for image in &gallery.images {
                     names.push(image.name.clone());

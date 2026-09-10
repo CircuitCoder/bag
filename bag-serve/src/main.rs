@@ -7,6 +7,7 @@ use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 use crate::db::Database;
 
 mod db;
+mod filter;
 mod scan;
 mod serve;
 

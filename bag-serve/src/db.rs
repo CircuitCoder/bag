@@ -20,7 +20,8 @@ impl Database {
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(1))
             .pragma("journal_size_limit", "67108864") // 64MB
-            .pragma("mmap_size", "268435456"); // 256MB
+            .pragma("mmap_size", "268435456") // 256MB
+            .with_regexp();
         Ok(opts)
     }
 
