@@ -137,6 +137,7 @@ struct Context {
     backend_url: String,
     backend_hash: String,
     cfg_dialog: Arc<NodeRef<leptos::html::Dialog>>,
+    root: NodeRef<Div>,
     settings: Settings,
     saved: Arc<Mutex<HashMap<String, SavedRenderTarget>>>,
 }
@@ -160,6 +161,7 @@ impl Context {
             backend_url: backend.url,
             backend_hash: backend.hash,
             cfg_dialog: Arc::new(NodeRef::new()),
+            root: NodeRef::new(),
             settings: Settings::from_storage(local_storage()),
             saved: Arc::new(Mutex::new(HashMap::new())),
         };
@@ -183,12 +185,7 @@ impl Context {
         self.navigate_hydrate(p, ty, None);
     }
 
-    pub fn navigate_hydrate(
-        &self,
-        p: String,
-        ty: NavigateType,
-        data: Option<Result<LayoutOrAction, FetchError>>,
-    ) {
+    pub fn navigate_hydrate(&self, p: String, ty: NavigateType, data: Option<SavedRenderTarget>) {
         let targets = self.targets.read_untracked();
         if p == targets.current.path {
             return;
@@ -196,10 +193,16 @@ impl Context {
 
         {
             let current = &self.targets.read_untracked().current;
-            self.saved
-                .lock()
-                .unwrap()
-                .insert(current.path.clone(), current.save());
+            let scroll = self
+                .root
+                .get_untracked()
+                .and_then(|root| root.query_selector(".panel-current").ok().flatten())
+                .map_or(0, |panel| panel.scroll_top());
+            let mut saved = self.saved.lock().unwrap();
+            match current.save(scroll) {
+                Some(s) => saved.insert(current.path.clone(), s),
+                None => saved.remove(&current.path),
+            };
         }
 
         if matches!(ty, NavigateType::Push) {
@@ -372,6 +375,8 @@ impl Context {
 
 struct RenderTarget {
     path: String,
+    // Initial panel scroll position, applied once when the panel mounts.
+    scroll: i32,
     // None = fetching
     data: ArcRwSignal<Option<Result<LayoutOrAction, FetchError>>>,
     // Whether this render target is retired on drop.
@@ -392,13 +397,19 @@ impl RenderTarget {
             })
         }
 
-        Self { path, data, retire }
-    }
-
-    pub fn hydrate(path: String, data: Result<LayoutOrAction, FetchError>) -> Self {
-        let data = ArcRwSignal::new(Some(data));
         Self {
             path,
+            scroll: 0,
+            data,
+            retire,
+        }
+    }
+
+    pub fn hydrate(path: String, saved: SavedRenderTarget) -> Self {
+        let data = ArcRwSignal::new(Some(saved.data));
+        Self {
+            path,
+            scroll: saved.scroll,
             data,
             retire: None,
         }
@@ -407,15 +418,17 @@ impl RenderTarget {
     pub fn weak(&self) -> RenderTarget {
         RenderTarget {
             path: self.path.clone(),
+            scroll: self.scroll,
             data: self.data.clone(),
             retire: None,
         }
     }
 
-    pub fn save(&self) -> SavedRenderTarget {
-        SavedRenderTarget {
-            data: self.data.get_untracked(),
-        }
+    pub fn save(&self, scroll: i32) -> Option<SavedRenderTarget> {
+        Some(SavedRenderTarget {
+            data: self.data.get_untracked()?,
+            scroll,
+        })
     }
 }
 
@@ -439,7 +452,8 @@ struct RenderTargetSet {
 
 #[derive(Clone)]
 struct SavedRenderTarget {
-    data: Option<Result<LayoutOrAction, FetchError>>,
+    data: Result<LayoutOrAction, FetchError>,
+    scroll: i32,
 }
 
 #[derive(Eq, PartialEq, Hash, Clone, Copy)]
@@ -720,13 +734,7 @@ fn App() -> AnyView {
                 && backend == ctx.backend_hash
             {
                 // Get saved content
-                let saved = ctx
-                    .saved
-                    .lock()
-                    .unwrap()
-                    .get(path)
-                    .cloned()
-                    .and_then(|s| s.data);
+                let saved = ctx.saved.lock().unwrap().remove(path); // Remove is fine: it'll get re-inserted off next navigation
                 ctx.navigate_hydrate(path.to_owned(), NavigateType::Pop, saved);
             } else {
                 // Handle as normal redirect
@@ -826,7 +834,7 @@ fn App() -> AnyView {
     }));
     util::request_animation_frame(frame_handler.borrow().as_ref().unwrap());
 
-    let root = NodeRef::<Div>::new();
+    let root = ctx.root;
     let mut auto_stopped = false;
     let mutation_handler: ScopedClosure<dyn FnMut(web_sys::js_sys::Array, MutationObserver)> =
         Closure::wrap(Box::new(
@@ -989,12 +997,17 @@ fn App() -> AnyView {
             <For
                 each=move || ctx.targets.read().as_targets()
                 key=|target| target.path.clone()
-                let (target)
-            >
-                <div class={move || format!("panel panel-{}", ctx.targets.read().get_persona(&target.path).map(|p| p.as_str()).unwrap_or("unknown"))}>
-                    <panel::Panel data={target.data.read_only()} path={target.path.clone()} />
-                </div>
-            </For>
+                children=move |target| {
+                    let panel = NodeRef::<Div>::new();
+                    // The cached layout must be mounted before setting scrollTop.
+                    panel.on_load(move |panel| panel.set_scroll_top(target.scroll));
+                    view! {
+                        <div node_ref=panel class={move || format!("panel panel-{}", ctx.targets.read().get_persona(&target.path).map(|p| p.as_str()).unwrap_or("unknown"))}>
+                            <panel::Panel data={target.data.read_only()} path={target.path.clone()} />
+                        </div>
+                    }
+                }
+            />
         </div>
     }
     .into_any()
