@@ -1,4 +1,9 @@
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use bag_lib::{action::Action, ui::LayoutOrAction};
 use futures::{
@@ -133,6 +138,7 @@ struct Context {
     backend_hash: String,
     cfg_dialog: Arc<NodeRef<leptos::html::Dialog>>,
     settings: Settings,
+    saved: Arc<Mutex<HashMap<String, SavedRenderTarget>>>,
 }
 
 enum NavigateType {
@@ -155,6 +161,7 @@ impl Context {
             backend_hash: backend.hash,
             cfg_dialog: Arc::new(NodeRef::new()),
             settings: Settings::from_storage(local_storage()),
+            saved: Arc::new(Mutex::new(HashMap::new())),
         };
         ret.subscribe(&ret.targets.read_untracked().current, retire_rx);
         ret
@@ -173,9 +180,26 @@ impl Context {
 
     // TODO: relative navigation
     pub fn navigate(&self, p: String, ty: NavigateType) {
+        self.navigate_hydrate(p, ty, None);
+    }
+
+    pub fn navigate_hydrate(
+        &self,
+        p: String,
+        ty: NavigateType,
+        data: Option<Result<LayoutOrAction, FetchError>>,
+    ) {
         let targets = self.targets.read_untracked();
         if p == targets.current.path {
             return;
+        }
+
+        {
+            let current = &self.targets.read_untracked().current;
+            self.saved
+                .lock()
+                .unwrap()
+                .insert(current.path.clone(), current.save());
         }
 
         if matches!(ty, NavigateType::Push) {
@@ -229,10 +253,14 @@ impl Context {
         };
         web_sys::console::log_1(&format!("Navigating to {p} with operation {:?}", op).into());
 
+        // TODO: directly hydrate if data is provided
+
         match op {
             Operation::RotR => {
                 let replacing = if let Some(prev) = targets.prev.take() {
                     prev
+                } else if let Some(saved) = data {
+                    RenderTarget::hydrate(p, saved)
                 } else {
                     self.initiate(p)
                 };
@@ -242,6 +270,8 @@ impl Context {
             Operation::RotL => {
                 let replacing = if let Some(next) = targets.next.take() {
                     next
+                } else if let Some(saved) = data {
+                    RenderTarget::hydrate(p, saved)
                 } else {
                     self.initiate(p)
                 };
@@ -249,7 +279,11 @@ impl Context {
                 targets.prev = Some(replaced);
             }
             Operation::Reset => {
-                targets.current = self.initiate(p);
+                targets.current = if let Some(saved) = data {
+                    RenderTarget::hydrate(p, saved)
+                } else {
+                    self.initiate(p)
+                };
                 targets.prev = None;
                 targets.next = None;
             }
@@ -361,11 +395,26 @@ impl RenderTarget {
         Self { path, data, retire }
     }
 
+    pub fn hydrate(path: String, data: Result<LayoutOrAction, FetchError>) -> Self {
+        let data = ArcRwSignal::new(Some(data));
+        Self {
+            path,
+            data,
+            retire: None,
+        }
+    }
+
     pub fn weak(&self) -> RenderTarget {
         RenderTarget {
             path: self.path.clone(),
             data: self.data.clone(),
             retire: None,
+        }
+    }
+
+    pub fn save(&self) -> SavedRenderTarget {
+        SavedRenderTarget {
+            data: self.data.get_untracked(),
         }
     }
 }
@@ -386,6 +435,11 @@ struct RenderTargetSet {
     current: RenderTarget,
     next: Option<RenderTarget>,
     prev: Option<RenderTarget>,
+}
+
+#[derive(Clone)]
+struct SavedRenderTarget {
+    data: Option<Result<LayoutOrAction, FetchError>>,
 }
 
 #[derive(Eq, PartialEq, Hash, Clone, Copy)]
@@ -655,6 +709,7 @@ fn App() -> AnyView {
     {
         let ctx = ctx.clone();
         let closure = Closure::wrap(Box::new(move |_event: web_sys::PopStateEvent| {
+            // Save current state
             let full_path = web_sys::window()
                 .unwrap()
                 .location()
@@ -664,7 +719,15 @@ fn App() -> AnyView {
             if let Some((backend, path)) = parse_backend(&full_path)
                 && backend == ctx.backend_hash
             {
-                ctx.navigate(path.to_owned(), NavigateType::Pop);
+                // Get saved content
+                let saved = ctx
+                    .saved
+                    .lock()
+                    .unwrap()
+                    .get(path)
+                    .cloned()
+                    .and_then(|s| s.data);
+                ctx.navigate_hydrate(path.to_owned(), NavigateType::Pop, saved);
             } else {
                 // Handle as normal redirect
                 web_sys::window()
