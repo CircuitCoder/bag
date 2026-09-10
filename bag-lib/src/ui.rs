@@ -75,6 +75,8 @@ pub struct GalleryImage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Gallery {
+    #[serde(default)]
+    pub can_order: bool,
     pub images: Vec<GalleryImage>,
 }
 

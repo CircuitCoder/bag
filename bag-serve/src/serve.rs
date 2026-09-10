@@ -130,7 +130,7 @@ async fn open_archive_view(thunk: FileThunk<'_>) -> bag_fs::Result<ArchiveView> 
 
 fn is_archive_path(path: &str) -> bool {
     mime_guess::from_path(path).first_or_octet_stream() == "application/zip"
-    || path.ends_with(".zi") // Hacking for some corner case. TODO: actually guess from file content
+        || path.ends_with(".zi") // Hacking for some corner case. TODO: actually guess from file content
 }
 
 fn archive_redirect(path: &Path<'_>) -> LayoutOrAction {
@@ -300,7 +300,6 @@ pub async fn render_file(
     // Fetch self
     let result = if file.is_directory {
         // TODO: filter
-        // TODO: sort
 
         let limit = path
             .last()
@@ -314,21 +313,38 @@ pub async fn render_file(
             .arg("offset")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0) as i64;
+        let sort = path.last().unwrap().arg("sort");
+        let order = path.last().unwrap().arg("order").unwrap_or("desc");
+        if !(order.eq_ignore_ascii_case("desc") || order.eq_ignore_ascii_case("asc")) {
+            return Ok(Some(
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "Invalid order argument".to_owned(),
+                )
+                    .into_response(),
+            ));
+        }
+        let orderby_directive = match sort {
+            Some("path") => format!("path {} , mtime {}", order, order),
+            _ => format!("mtime {} , path {}", order, order),
+        };
 
-        let children = sqlx::query!(
+        #[derive(sqlx::FromRow)]
+        struct DirectoryEntry {
+            path: String,
+            is_directory: bool,
+        }
+
+        let children = sqlx::query_as::<_, DirectoryEntry>(&format!(
             r#"
-            SELECT path, is_directory, id FROM files WHERE parent = ?
-            ORDER BY
-                is_directory DESC,
-                CASE WHEN substr(lower(path), -4) = '.zip' THEN 1 ELSE 0 END DESC,
-                mtime DESC,
-                path DESC
+            SELECT path, is_directory FROM files WHERE parent = ?
+            ORDER BY is_directory DESC, {orderby_directive}
             LIMIT ? + 1 OFFSET ?
-        "#,
-            file.id,
-            limit,
-            offset
-        )
+        "#
+        ))
+        .bind(file.id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(db.as_ref())
         .await?;
 
@@ -371,7 +387,10 @@ pub async fn render_file(
 
         Layout {
             top: vec![],
-            main: vec![Component::Gallery(Gallery { images })],
+            main: vec![Component::Gallery(Gallery {
+                can_order: true,
+                images,
+            })],
             metadata,
             left: (!is_start).then(|| {
                 let offset_str;
@@ -391,42 +410,72 @@ pub async fn render_file(
     } else {
         // Siblings
         let parent_id = file.parent;
-        let parent_path = path
-            .parent()
+        let parent = path.parent();
+        let parent_path = parent
+            .as_ref()
             .map(|e| e.to_string() + "/")
             .unwrap_or_else(|| "".to_owned());
-        let prev = sqlx::query!(
+        let parent_sort = parent
+            .as_ref()
+            .and_then(|parent| parent.last())
+            .and_then(|segment| segment.arg("sort"));
+        let parent_order = parent
+            .as_ref()
+            .and_then(|parent| parent.last())
+            .and_then(|segment| segment.arg("order"))
+            .unwrap_or("desc");
+        if !(parent_order.eq_ignore_ascii_case("desc") || parent_order.eq_ignore_ascii_case("asc"))
+        {
+            return Ok(Some(
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "Invalid order argument".to_owned(),
+                )
+                    .into_response(),
+            ));
+        }
+        let (primary, secondary) = match parent_sort {
+            Some("path") => ("path", "mtime"),
+            _ => ("mtime", "path"),
+        };
+        let (prev_operator, prev_order, next_operator, next_order) =
+            if parent_order.eq_ignore_ascii_case("asc") {
+                ("<", "DESC", ">", "ASC")
+            } else {
+                (">", "ASC", "<", "DESC")
+            };
+        // Compare the complete sort key so equal timestamps still have unique neighbors.
+        // Read the current key in SQL to preserve SQLite's stored timestamp format.
+        let prev = sqlx::query_scalar::<_, String>(&format!(
             r#"
                 SELECT path FROM files
                 WHERE parent = ?
-                    AND id != ?
                     AND is_directory = FALSE
                     AND substr(lower(path), -4) != '.zip'
-                    AND mtime >= ?
-                ORDER BY mtime ASC, path ASC
+                    AND ({primary}, {secondary}) {prev_operator}
+                        (SELECT {primary}, {secondary} FROM files WHERE id = ?)
+                ORDER BY {primary} {prev_order}, {secondary} {prev_order}
                 LIMIT 1
-            "#,
-            parent_id,
-            file.id,
-            file.mtime,
-        )
+            "#
+        ))
+        .bind(parent_id)
+        .bind(file.id)
         .fetch_optional(db.as_ref())
         .await?;
-        let next = sqlx::query!(
+        let next = sqlx::query_scalar::<_, String>(&format!(
             r#"
                 SELECT path FROM files
                 WHERE parent = ?
-                    AND id != ?
                     AND is_directory = FALSE
                     AND substr(lower(path), -4) != '.zip'
-                    AND mtime <= ?
-                ORDER BY mtime DESC, path DESC
+                    AND ({primary}, {secondary}) {next_operator}
+                        (SELECT {primary}, {secondary} FROM files WHERE id = ?)
+                ORDER BY {primary} {next_order}, {secondary} {next_order}
                 LIMIT 1
-            "#,
-            parent_id,
-            file.id,
-            file.mtime,
-        )
+            "#
+        ))
+        .bind(parent_id)
+        .bind(file.id)
         .fetch_optional(db.as_ref())
         .await?;
         Layout {
@@ -436,8 +485,8 @@ pub async fn render_file(
                 mime: None,
             })],
             metadata,
-            left: prev.map(|p| parent_path.clone() + p.path.rsplit("/").next().unwrap()),
-            right: next.map(|n| parent_path + n.path.rsplit("/").next().unwrap()),
+            left: prev.map(|p| parent_path.clone() + p.rsplit("/").next().unwrap()),
+            right: next.map(|n| parent_path + n.rsplit("/").next().unwrap()),
         }
     };
 
@@ -825,7 +874,11 @@ mod tests {
         body::{Body, to_bytes},
         http::{HeaderMap, Request, header},
     };
-    use bag_lib::{action::Action, path::Path, ui::LayoutOrAction};
+    use bag_lib::{
+        action::Action,
+        path::Path,
+        ui::{Component, GalleryImageType, Layout, LayoutOrAction},
+    };
     use image::{DynamicImage, ImageFormat};
     use std::io::{Cursor, Write};
     use tower::ServiceExt;
@@ -841,6 +894,137 @@ mod tests {
             .unwrap();
         writer.write_all(contents).unwrap();
         writer.finish().unwrap().into_inner()
+    }
+
+    async fn render_layout(app: &axum::Router, path: &str) -> Layout {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/render/{path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn directory_order_and_sibling_navigation_agree() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::setup("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "INSERT INTO files (id, path, mtime, length, scan_id, is_directory, parent)
+             VALUES (1, '', '2026-01-01 00:00:00', 0, 1, TRUE, NULL)",
+        )
+        .execute(database.as_ref())
+        .await
+        .unwrap();
+        for (name, day, is_directory) in [
+            ("a.jpg", 2, false),
+            ("b.jpg", 1, false),
+            ("c.jpg", 2, false),
+            ("d.jpg", 3, false),
+            ("b.ZIP", 2, false),
+            ("aa-dir", 1, true),
+            ("zz-dir", 4, true),
+        ] {
+            sqlx::query(
+                "INSERT INTO files (path, mtime, length, scan_id, is_directory, parent)
+                 VALUES (?, ?, 0, 1, ?, 1)",
+            )
+            .bind(name)
+            .bind(format!("2026-01-{day:02} 00:00:00"))
+            .bind(is_directory)
+            .execute(database.as_ref())
+            .await
+            .unwrap();
+        }
+        let app = build(database, directory.path().to_path_buf(), 1);
+        let by_path = [
+            "aa-dir", "zz-dir", "a.jpg", "b.ZIP", "b.jpg", "c.jpg", "d.jpg",
+        ];
+        let by_mtime = [
+            "aa-dir", "zz-dir", "b.jpg", "a.jpg", "b.ZIP", "c.jpg", "d.jpg",
+        ];
+        for (args, by_path_sort, ascending) in [
+            (",sort=path,order=asc", true, true),
+            (",sort=path,order=desc", true, false),
+            (",sort=mtime,order=asc", false, true),
+            (",sort=mtime,order=desc", false, false),
+            (",sort=path,order=aSc", true, true),
+            (",sort=mtime,order=DeSc", false, false),
+            (",order=asc", false, true),
+            (",sort=unknown", false, false),
+            ("", false, false),
+        ] {
+            let mut expected = if by_path_sort { by_path } else { by_mtime };
+            if !ascending {
+                expected[..2].reverse();
+                expected[2..].reverse();
+            }
+            let mut page_path = format!("file{args},limit=2");
+            let mut names = Vec::new();
+            let mut media = Vec::new();
+            loop {
+                let layout = render_layout(&app, &page_path).await;
+                assert_eq!(layout.left.is_none(), names.is_empty());
+                let Component::Gallery(gallery) = &layout.main[0] else {
+                    panic!("expected gallery");
+                };
+                assert!(gallery.images.len() <= 2);
+                for image in &gallery.images {
+                    names.push(image.name.clone());
+                    if matches!(image.ty, GalleryImageType::File) {
+                        let Some(Action::Navigate { to }) = &image.action else {
+                            panic!("expected navigation action");
+                        };
+                        media.push((image.name.clone(), to.clone()));
+                    }
+                }
+                assert!(names.len() <= expected.len(), "pagination did not finish");
+                let Some(next) = layout.right else { break };
+                page_path = next;
+            }
+            assert_eq!(names, expected, "{args}");
+            for (index, (_, to)) in media.iter().enumerate() {
+                let layout = render_layout(&app, to).await;
+                let parent = Path::try_from(to.as_str())
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .to_string();
+                let prev = index
+                    .checked_sub(1)
+                    .map(|i| format!("{parent}/{}", media[i].0));
+                let next = media
+                    .get(index + 1)
+                    .map(|(name, _)| format!("{parent}/{name}"));
+                assert_eq!(layout.left, prev, "{to}");
+                assert_eq!(layout.right, next, "{to}");
+            }
+        }
+
+        for path in ["file,order=invalid", "file,order=invalid/a.jpg"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/v1/render/{path}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+            assert_eq!(
+                to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+                "Invalid order argument",
+            );
+        }
     }
 
     #[test]

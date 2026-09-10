@@ -90,7 +90,7 @@ pub fn Panel(
                 }
                 .into_any()
             }
-            bag_lib::ui::Component::Gallery(Gallery { images }) => {
+            bag_lib::ui::Component::Gallery(Gallery { can_order, images }) => {
                 let items: Vec<_> = images.iter().map(|img| {
                     let thumbnail = img.thumbnail.as_ref().map(|t| view! {
                             <img
@@ -128,6 +128,75 @@ pub fn Panel(
 
                 let settings = settings.clone();
 
+                let order_settings = if *can_order {
+                    let sort = initial_path
+                        .last()
+                        .and_then(|s| s.arg("sort"))
+                        .unwrap_or("mtime")
+                        .to_owned();
+                    let order = initial_path
+                        .last()
+                        .and_then(|s| s.arg("order"))
+                        .unwrap_or("desc")
+                        .to_owned();
+                    let create_click_at = |ident: &'static str| {
+                        let inner_sort = sort.clone();
+                        let inner_order = order.clone();
+                        let inner_path = initial_path.to_static();
+                        let dispatch = *dispatch;
+
+                        move |_| {
+                            let new_order = if inner_sort == ident {
+                                if inner_order == "asc" { "desc" } else { "asc" }
+                            } else {
+                                "desc"
+                            };
+                            let new_path = inner_path
+                                .update(inner_path.len() - 1, |seg| {
+                                    seg.with_arg(
+                                        "sort",
+                                        if ident == "mtime" { None } else { Some(ident) },
+                                    )
+                                    .with_arg(
+                                        "order",
+                                        if new_order == "desc" {
+                                            None
+                                        } else {
+                                            Some(new_order)
+                                        },
+                                    )
+                                })
+                                .unwrap();
+                            dispatch.dispatch(bag_lib::action::Action::Redirect {
+                                to: new_path.to_string(),
+                            });
+                        }
+                    };
+
+                    let mtime_handler = create_click_at("mtime");
+                    let path_handler = create_click_at("path");
+
+                    let view = move || {
+                        view! {
+                            <div class="rendered-gallery-order" data-active-sort={sort.clone()} data-active-order={order.clone()}>
+                                <div class="rendered-gallery-order-option" data-ident="mtime" on:click={mtime_handler.clone()}>
+                                    <span class="material-symbols-filled" aria-hidden="true">schedule</span>
+                                    <span class="rendered-gallery-order-desc">-</span>
+                                    <span class="rendered-gallery-order-asc">+</span>
+                                </div>
+                                <div class="rendered-gallery-order-option" data-ident="path" on:click={path_handler.clone()}>
+                                    <span class="material-symbols-filled" aria-hidden="true">sort_by_alpha</span>
+                                    <span class="rendered-gallery-order-desc">-</span>
+                                    <span class="rendered-gallery-order-asc">+</span>
+                                </div>
+                            </div>
+                        }
+                    };
+                    Some(view.into_any())
+                } else {
+                    None
+                };
+
                 view! {
                     <div class="rendered-gallery">
                         <div class="rendered-gallery-header">
@@ -149,6 +218,7 @@ pub fn Panel(
                                     <span class="material-symbols-filled" aria-hidden="true">list</span>
                                 </label>
                             </form>
+                            {order_settings}
                         </div>
                         <div class="rendered-gallery-items">
                             {items}
