@@ -193,12 +193,15 @@ main > .layout-nav {
 /* Gallery */
 .rendered-gallery {
   font-family: var(--font-monospace);
-  width: 100%;
-  padding: 20px;
+  margin: 20px;
+  width: calc(100% - 40px);
 }
 
 .rendered-gallery-header {
   display: flex;
+  margin-bottom: 10px;
+  align-items: center;
+  justify-content: center;
 }
 
 .rendered-gallery-display {
@@ -454,13 +457,22 @@ button,
   border-color: rgba(from var(--foreground) r g b / 0.2);
 }
 
+.rendered-input {
+  flex: 1;
+  margin: 20px;
+  width: calc(100% - 40px);
+}
+
+
 /* Settigns & Input */
+.rendered-input,
 .input-row {
   display: flex;
   background: rgba(from var(--foreground) r g b / 0.1);
   border-radius: 4px;
 }
 
+.rendered-input input,
 .input-row input {
   flex: 1;
   outline: none;
@@ -468,8 +480,10 @@ button,
   background: transparent;
   color: var(--foreground);
   padding: 0 10px;
+  font-family: monospace;
 }
 
+.rendered-input input::placeholder,
 .input-row input::placeholder {
   color: rgba(from var(--foreground) r g b / 0.5);
 }
