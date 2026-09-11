@@ -176,7 +176,7 @@ impl EndsWithExt for str {
 impl EndsWithExt for OsStr {
     fn ends_with_ext(&self, ext: &str) -> bool {
         // TODO: just compare
-        self.to_str().map_or(false, |s| s.ends_with(ext))
+        self.to_str().is_some_and(|s| s.ends_with(ext))
     }
 }
 
