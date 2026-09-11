@@ -183,6 +183,12 @@ where
         return render(ctx).await;
     };
 
+    // Directories cannot be archives, even when their names end in .zip.
+    // Reject them before content detection tries to read the directory handle.
+    if metadata.is_dir() {
+        return Err(crate::Error::NotArchive(subpath.len()));
+    }
+
     // Descend
     // TODO: move into sync helper
     let ty = ArchiveType::from_path_and_read(base.as_os_str(), &mut file)?

@@ -362,11 +362,19 @@ async fn distinguishes_unsupported_archives_from_invalid_zip_files() {
     std::fs::write(directory.path().join("broken.zip"), b"not a zip").unwrap();
     std::fs::create_dir(directory.path().join("folder")).unwrap();
 
-    for path in ["plain.txt/%3A", "folder/%3A"] {
-        assert!(matches!(
-            open(directory.path(), path).await,
-            Err(Error::NotArchive(1))
-        ));
+    std::fs::create_dir(directory.path().join("folder.zip")).unwrap();
+
+    for (path, suffix_len) in [
+        ("plain.txt/%3A", 1),
+        ("folder/%3A", 1),
+        ("folder.zip/%3A", 1),
+        ("folder/%3A/inside.txt", 2),
+    ] {
+        let result = open(directory.path(), path).await;
+        assert!(
+            matches!(result, Err(Error::NotArchive(len)) if len == suffix_len),
+            "expected NotArchive({suffix_len}) for {path}, got {result:?}"
+        );
     }
     assert!(matches!(
         open(directory.path(), "broken.zip/%3A").await,
