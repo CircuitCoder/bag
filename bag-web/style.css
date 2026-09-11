@@ -480,7 +480,7 @@ button,
   background: transparent;
   color: var(--foreground);
   padding: 0 10px;
-  font-family: monospace;
+  font-family: var(--font-monospace);
 }
 
 .rendered-input input::placeholder,
