@@ -74,11 +74,13 @@ fn goto_backend(backend: String) {
         target
     } else {
         // New backend
+        use rustc_stable_hash::StableSipHasher128;
         use std::hash::{Hash, Hasher};
         let mut new_backends = Vec::with_capacity(backends.len() + 1);
-        let mut hasher = std::hash::DefaultHasher::new();
+        let mut hasher = StableSipHasher128::new();
         backend.hash(&mut hasher);
-        let hash = format!("{:x}", hasher.finish());
+        let hash: u64 = Hasher::finish(&hasher);
+        let hash = format!("{:x}", hash);
         // Hex encode
         let target = format!("/{}", hash);
         let backend = Backend {
